@@ -1,15 +1,39 @@
-import { useEffect } from 'react';
+// src/App.jsx
+import { useEffect, lazy, Suspense } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { useStore, selectTheme } from './store/useStore';
+import { useStore, selectTheme, selectActiveTab } from './store/useStore';
 import Header from './components/Header';
-import Dashboard from './components/Dashboard';
+import BottomNav from './components/BottomNav';
+import DebtPill from './components/DebtPill';
 import QuickAdd from './components/QuickAdd';
+
+// Lazy-load modules so the initial bundle stays slim
+const Dashboard   = lazy(() => import('./modules/Dashboard'));
+const Budgets     = lazy(() => import('./modules/Budgets'));
+const Investments = lazy(() => import('./modules/Investments'));
+const CalendarMod = lazy(() => import('./modules/CalendarView'));
+const Debt        = lazy(() => import('./modules/Debt'));
+
+const MODULES = {
+  dashboard:   Dashboard,
+  budgets:     Budgets,
+  investments: Investments,
+  calendar:    CalendarMod,
+  debt:        Debt,
+};
+
+const slide = {
+  initial: { opacity: 0, y: 8 },
+  animate: { opacity: 1, y: 0 },
+  exit:    { opacity: 0, y: -8 },
+  transition: { duration: 0.25, ease: [0.16, 1, 0.3, 1] },
+};
 
 export default function App() {
   const theme = useStore(selectTheme);
-  const workspace = useStore((s) => s.app.workspace);
+  const activeTab = useStore(selectActiveTab);
+  const Module = MODULES[activeTab] || Dashboard;
 
-  // Sync theme to <html> class so Tailwind dark: works
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
   }, [theme]);
@@ -17,18 +41,34 @@ export default function App() {
   return (
     <div className="min-h-screen font-sans">
       <Header />
+
+      {/* Persistent debt indicator — sits below header */}
+      <div className="max-w-2xl mx-auto px-5 pt-3">
+        <DebtPill />
+      </div>
+
       <AnimatePresence mode="wait">
-        <motion.div
-          key={workspace}
-          initial={{ opacity: 0, y: 6 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -6 }}
-          transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-        >
-          {workspace === 'personal' && <Dashboard />}
+        <motion.div key={activeTab} {...slide}>
+          <Suspense fallback={<ModuleFallback />}>
+            <Module />
+          </Suspense>
         </motion.div>
       </AnimatePresence>
+
       <QuickAdd />
+      <BottomNav />
+    </div>
+  );
+}
+
+function ModuleFallback() {
+  return (
+    <div className="max-w-2xl mx-auto px-5 pt-8 pb-32">
+      <div className="space-y-3">
+        <div className="h-10 w-40 rounded-lg bg-[var(--surface)] animate-pulse" />
+        <div className="h-32 rounded-2xl bg-[var(--surface)] animate-pulse" />
+        <div className="h-48 rounded-2xl bg-[var(--surface)] animate-pulse" />
+      </div>
     </div>
   );
 }

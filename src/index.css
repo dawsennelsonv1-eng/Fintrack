@@ -10,7 +10,6 @@
     --text: #161513;
     --text-muted: #6b6760;
   }
-
   .dark {
     --bg: #0c0b0a;
     --surface: #161513;
@@ -18,11 +17,7 @@
     --text: #f6f5f1;
     --text-muted: #908b80;
   }
-
-  html, body, #root {
-    height: 100%;
-  }
-
+  html, body, #root { height: 100%; }
   body {
     background: var(--bg);
     color: var(--text);
@@ -30,8 +25,6 @@
     -webkit-tap-highlight-color: transparent;
     -webkit-font-smoothing: antialiased;
   }
-
-  /* Hide scrollbar on iOS bottom-sheet but keep scroll */
   .no-scrollbar::-webkit-scrollbar { display: none; }
   .no-scrollbar { scrollbar-width: none; }
 }
@@ -41,9 +34,7 @@
     background: var(--surface);
     border-color: var(--border);
   }
-  .text-muted {
-    color: var(--text-muted);
-  }
+  .text-muted { color: var(--text-muted); }
   .num {
     font-feature-settings: 'tnum';
     font-variant-numeric: tabular-nums;
