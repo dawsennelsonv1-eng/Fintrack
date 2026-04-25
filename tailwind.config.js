@@ -7,7 +7,6 @@ export default {
       fontFamily: {
         display: ['"Instrument Serif"', 'serif'],
         sans: ['"Inter Tight"', 'system-ui', 'sans-serif'],
-        mono: ['"JetBrains Mono"', 'monospace'],
       },
       colors: {
         ink: {
@@ -20,15 +19,6 @@ export default {
         accent: {
           income: '#3d8b5f',
           expense: '#c2452f',
-        },
-      },
-      animation: {
-        'pulse-soft': 'pulseSoft 2s ease-in-out infinite',
-      },
-      keyframes: {
-        pulseSoft: {
-          '0%, 100%': { opacity: '1' },
-          '50%': { opacity: '0.4' },
         },
       },
     },
