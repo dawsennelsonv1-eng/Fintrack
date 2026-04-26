@@ -7,8 +7,9 @@ import {
 import { ArrowDownLeft, ArrowUpRight, Wallet, TrendingUp, AlertCircle } from 'lucide-react';
 import {
   useStore,
-  selectTransactions, selectMonthSummary, selectInvestmentTotals,
+  selectTransactions, selectInvestments,
   selectTotalDebtInBase, selectBaseCurrency, selectRates,
+  computeMonthSummary, computeInvestmentTotals,
 } from '../store/useStore';
 import { convert, formatMoney, formatCompact } from '../lib/currency';
 import { fadeUp, ease, relativeTime } from '../lib/util';
@@ -16,13 +17,14 @@ import SyncBadge from '../components/SyncBadge';
 
 export default function Dashboard() {
   const transactions = useStore(selectTransactions);
-  const summary      = useStore(selectMonthSummary);
-  const invTotals    = useStore(selectInvestmentTotals);
+  const investments  = useStore(selectInvestments);
   const debt         = useStore(selectTotalDebtInBase);
   const baseCurrency = useStore(selectBaseCurrency);
   const rates        = useStore(selectRates);
 
-  // Net worth = liquid (sum of all-time net) + investment value − debt
+  const summary   = useMemo(() => computeMonthSummary(transactions, baseCurrency, rates), [transactions, baseCurrency, rates]);
+  const invTotals = useMemo(() => computeInvestmentTotals(investments, baseCurrency, rates), [investments, baseCurrency, rates]);
+
   const netWorth = useMemo(() => {
     let liquid = 0;
     for (const t of transactions) {
@@ -37,7 +39,6 @@ export default function Dashboard() {
 
   return (
     <main className="max-w-2xl mx-auto px-5 pt-4 pb-32">
-      {/* Hero — Net worth */}
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease }} className="mb-5">
         <div className="flex items-center justify-between mb-1.5">
           <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">Net Worth</div>
@@ -53,7 +54,6 @@ export default function Dashboard() {
         </div>
       </motion.section>
 
-      {/* Stat grid */}
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.05 }}
         className="grid grid-cols-2 gap-3 mb-5">
         <StatCard label="Income · MTD"   value={summary.income}     tone="income"  icon={ArrowDownLeft} currency={baseCurrency} />
@@ -65,7 +65,6 @@ export default function Dashboard() {
         <StatCard label="Total Debt"     value={debt}               tone={debt > 0 ? 'expense' : 'default'} icon={AlertCircle} currency={baseCurrency} />
       </motion.section>
 
-      {/* Cash flow chart */}
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.1 }} className="mb-6">
         <div className="surface border rounded-2xl p-5">
           <div className="flex items-baseline justify-between mb-4">
@@ -113,7 +112,6 @@ export default function Dashboard() {
         </div>
       </motion.section>
 
-      {/* Recent activity */}
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.15 }}>
         <div className="flex items-baseline justify-between mb-3 px-1">
           <h2 className="font-display text-2xl">Recent</h2>
@@ -135,7 +133,6 @@ export default function Dashboard() {
   );
 }
 
-// ─── helpers ───────────────────────────────────────────
 function buildSeries(transactions, baseCurrency, rates, days = 30) {
   const now = new Date();
   const buckets = {};

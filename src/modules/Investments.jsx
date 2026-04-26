@@ -5,8 +5,9 @@ import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis
 import { Plus, X, TrendingUp, TrendingDown, Briefcase, Coins, LineChart as LineIcon, Trash2, Rocket, ArrowUpRight } from 'lucide-react';
 import {
   useStore,
-  selectInvestments, selectVentures, selectInvestmentTotals, selectVentureTotals,
+  selectInvestments, selectVentures,
   selectBaseCurrency, selectRates,
+  computeInvestmentTotals, computeVentureTotals,
 } from '../store/useStore';
 import { CURRENCIES, convert, formatMoney, formatCompact } from '../lib/currency';
 import { fadeUp, ease } from '../lib/util';
@@ -22,11 +23,13 @@ const KIND_META = {
 const VENTURE_PALETTE = ['#5b8def', '#d4a942', '#3d8b5f', '#9b59b6', '#e07a5f', '#9aa3ad', '#2c8d9c', '#c2452f'];
 
 export default function Investments() {
-  const investments  = useStore(selectInvestments);
-  const totals       = useStore(selectInvestmentTotals);
-  const ventures     = useStore(selectVentureTotals);
-  const baseCurrency = useStore(selectBaseCurrency);
-  const rates        = useStore(selectRates);
+  const investments    = useStore(selectInvestments);
+  const venturesRaw    = useStore(selectVentures);
+  const baseCurrency   = useStore(selectBaseCurrency);
+  const rates          = useStore(selectRates);
+
+  const totals   = useMemo(() => computeInvestmentTotals(investments, baseCurrency, rates), [investments, baseCurrency, rates]);
+  const ventures = useMemo(() => computeVentureTotals(venturesRaw, baseCurrency, rates), [venturesRaw, baseCurrency, rates]);
 
   const [addingAsset, setAddingAsset] = useState(false);
   const [addingVenture, setAddingVenture] = useState(false);
