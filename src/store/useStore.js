@@ -10,18 +10,15 @@ const uid = (prefix = 'tx') =>
 const stripMeta = ({ _pending, ...rest }) => rest;
 const nowISO = () => new Date().toISOString();
 
-// ════════════════════════════════════════════════════════════════════
-// APP SLICE — workspace, theme, connectivity, base currency, rates
-// ════════════════════════════════════════════════════════════════════
 const appSlice = (set, get) => ({
   app: {
     workspace: 'personal',
     theme: 'dark',
     online: true,
-    activeTab: 'dashboard',          // dashboard | budgets | investments | calendar | debt
+    activeTab: 'dashboard',
     baseCurrency: 'USD',
     rates: { ...DEFAULT_RATES },
-    debtAcknowledged: false,         // dismisses the startup pulse
+    debtAcknowledged: false,
   },
   setWorkspace: (workspace) => set((s) => ({ app: { ...s.app, workspace } })),
   setTheme: (theme) => set((s) => ({ app: { ...s.app, theme } })),
@@ -34,23 +31,19 @@ const appSlice = (set, get) => ({
   acknowledgeDebt: () => set((s) => ({ app: { ...s.app, debtAcknowledged: true } })),
 });
 
-// ════════════════════════════════════════════════════════════════════
-// PERSONAL FINANCE SLICE
-// ════════════════════════════════════════════════════════════════════
 const personalSlice = (set, get) => ({
   personal: {
-    transactions: [],     // { id, date, amount, currency, category, type, notes }
-    budgets: [],          // { id, category, limit, currency, period }
-    debts: [],            // { id, creditor, principal, currency, repaid, dueDate, notes, createdAt }
-    investments: [],      // { id, kind, name, units, costBasis, currentPrice, currency, createdAt }
-    ventures: [],         // { id, name, deployed[], notes, status, createdAt }
+    transactions: [],
+    budgets: [],
+    debts: [],
+    investments: [],
+    ventures: [],
     queue: [],
     lastSyncAt: null,
     syncing: false,
     syncError: null,
   },
 
-  // ─── Transactions ──────────────────────────────────────────
   addTransaction: (input) => {
     const tx = {
       id: uid('tx'),
@@ -58,7 +51,7 @@ const personalSlice = (set, get) => ({
       amount: Number(input.amount),
       currency: input.currency || 'USD',
       category: input.category || 'Other',
-      type: input.type,                 // 'income' | 'expense'
+      type: input.type,
       notes: input.notes || '',
       createdAt: nowISO(),
       updatedAt: nowISO(),
@@ -86,7 +79,6 @@ const personalSlice = (set, get) => ({
     get().syncQueue();
   },
 
-  // ─── Budgets ───────────────────────────────────────────────
   addBudget: ({ category, limit, currency = 'USD', period = 'monthly' }) => {
     const b = { id: uid('bdg'), category, limit: Number(limit), currency, period, createdAt: nowISO() };
     set((s) => ({ personal: { ...s.personal, budgets: [...s.personal.budgets, b] } }));
@@ -94,27 +86,17 @@ const personalSlice = (set, get) => ({
   },
   updateBudget: (id, patch) => {
     set((s) => ({
-      personal: {
-        ...s.personal,
-        budgets: s.personal.budgets.map((b) => (b.id === id ? { ...b, ...patch } : b)),
-      },
+      personal: { ...s.personal, budgets: s.personal.budgets.map((b) => (b.id === id ? { ...b, ...patch } : b)) },
     }));
   },
   removeBudget: (id) => {
     set((s) => ({ personal: { ...s.personal, budgets: s.personal.budgets.filter((b) => b.id !== id) } }));
   },
 
-  // ─── Debts ─────────────────────────────────────────────────
   addDebt: ({ creditor, principal, currency = 'USD', dueDate, notes = '' }) => {
     const d = {
-      id: uid('debt'),
-      creditor,
-      principal: Number(principal),
-      currency,
-      repaid: 0,
-      dueDate: dueDate || null,
-      notes,
-      createdAt: nowISO(),
+      id: uid('debt'), creditor, principal: Number(principal), currency,
+      repaid: 0, dueDate: dueDate || null, notes, createdAt: nowISO(),
     };
     set((s) => ({ personal: { ...s.personal, debts: [...s.personal.debts, d] } }));
     return d;
@@ -133,19 +115,13 @@ const personalSlice = (set, get) => ({
     set((s) => ({ personal: { ...s.personal, debts: s.personal.debts.filter((d) => d.id !== id) } }));
   },
 
-  // ─── Investments ───────────────────────────────────────────
-  // kind: 'stock' | 'gold' | 'silver' | 'crypto' | 'other'
   addInvestment: ({ kind, name, units, costBasis, currentPrice, currency = 'USD' }) => {
     const inv = {
-      id: uid('inv'),
-      kind,
-      name,
+      id: uid('inv'), kind, name,
       units: Number(units),
       costBasis: Number(costBasis),
       currentPrice: Number(currentPrice ?? costBasis),
-      currency,
-      createdAt: nowISO(),
-      updatedAt: nowISO(),
+      currency, createdAt: nowISO(), updatedAt: nowISO(),
     };
     set((s) => ({ personal: { ...s.personal, investments: [...s.personal.investments, inv] } }));
     return inv;
@@ -161,20 +137,13 @@ const personalSlice = (set, get) => ({
     }));
   },
   removeInvestment: (id) => {
-    set((s) => ({
-      personal: { ...s.personal, investments: s.personal.investments.filter((i) => i.id !== id) },
-    }));
+    set((s) => ({ personal: { ...s.personal, investments: s.personal.investments.filter((i) => i.id !== id) } }));
   },
 
-  // ─── Ventures (seed capital tracker) ───────────────────────
   addVenture: ({ name, notes = '' }) => {
     const v = {
-      id: uid('vnt'),
-      name,
-      notes,
-      status: 'active',         // 'active' | 'paused' | 'returned' | 'failed'
-      deployed: [],             // [{ id, amount, currency, date, note }]
-      createdAt: nowISO(),
+      id: uid('vnt'), name, notes,
+      status: 'active', deployed: [], createdAt: nowISO(),
     };
     set((s) => ({ personal: { ...s.personal, ventures: [...s.personal.ventures, v] } }));
     return v;
@@ -203,7 +172,6 @@ const personalSlice = (set, get) => ({
     set((s) => ({ personal: { ...s.personal, ventures: s.personal.ventures.filter((v) => v.id !== id) } }));
   },
 
-  // ─── Sync ──────────────────────────────────────────────────
   hydrate: async () => {
     try {
       const { transactions } = await api.fetchAll();
@@ -237,7 +205,6 @@ const personalSlice = (set, get) => ({
     if (get().personal.syncing) return;
     const queue = get().personal.queue;
     if (queue.length === 0) return;
-
     set((s) => ({ personal: { ...s.personal, syncing: true, syncError: null } }));
     try {
       const { results = [] } = await api.bulk(queue);
@@ -261,16 +228,10 @@ const personalSlice = (set, get) => ({
   },
 });
 
-// ════════════════════════════════════════════════════════════════════
-// BUSINESS SLICE (Phase 2 stub)
-// ════════════════════════════════════════════════════════════════════
 const businessSlice = () => ({
   business: { enabled: false, transactions: [], queue: [] },
 });
 
-// ════════════════════════════════════════════════════════════════════
-// COMPOSED STORE
-// ════════════════════════════════════════════════════════════════════
 export const useStore = create()(
   persist(
     (set, get) => ({
@@ -318,7 +279,7 @@ export const useStore = create()(
 );
 
 // ════════════════════════════════════════════════════════════════════
-// SELECTORS — derived state, normalized to base currency
+// SIMPLE SELECTORS — return primitives or stable refs
 // ════════════════════════════════════════════════════════════════════
 export const selectTransactions = (s) => s.personal.transactions;
 export const selectBudgets = (s) => s.personal.budgets;
@@ -333,58 +294,52 @@ export const selectQueueSize = (s) => s.personal.queue.length;
 export const selectIsSyncing = (s) => s.personal.syncing;
 export const selectIsOnline = (s) => s.app.online;
 
-// Normalized totals (everything converted to base currency)
+// Total debt — returns a NUMBER (primitive), safe as a selector
 export const selectTotalDebtInBase = (state) => {
   const base = state.app.baseCurrency;
   const rates = state.app.rates;
-  return state.personal.debts.reduce((sum, d) => {
-    const remaining = d.principal - d.repaid;
-    return sum + convert(remaining, d.currency, base, rates);
-  }, 0);
+  let sum = 0;
+  for (const d of state.personal.debts) {
+    sum += convert(d.principal - d.repaid, d.currency, base, rates);
+  }
+  return sum;
 };
 
-export const selectMonthSummary = (state) => {
-  const base = state.app.baseCurrency;
-  const rates = state.app.rates;
+// ════════════════════════════════════════════════════════════════════
+// PURE COMPUTATION HELPERS — call inside useMemo from components
+// (Do NOT pass these to useStore — they return new objects every call)
+// ════════════════════════════════════════════════════════════════════
+export function computeMonthSummary(transactions, base, rates) {
   const monthStart = new Date();
   monthStart.setDate(1);
   monthStart.setHours(0, 0, 0, 0);
   let income = 0, expense = 0;
-  for (const t of state.personal.transactions) {
+  for (const t of transactions) {
     if (new Date(t.date) < monthStart) continue;
     const v = convert(Math.abs(t.amount), t.currency || 'USD', base, rates);
     if (t.type === 'income') income += v;
     else if (t.type === 'expense') expense += v;
   }
   return { income, expense, net: income - expense };
-};
+}
 
-export const selectInvestmentTotals = (state) => {
-  const base = state.app.baseCurrency;
-  const rates = state.app.rates;
+export function computeInvestmentTotals(investments, base, rates) {
   let cost = 0, value = 0;
-  for (const inv of state.personal.investments) {
+  for (const inv of investments) {
     cost  += convert(inv.units * inv.costBasis,    inv.currency, base, rates);
     value += convert(inv.units * inv.currentPrice, inv.currency, base, rates);
   }
   return { cost, value, gain: value - cost, gainPct: cost > 0 ? (value - cost) / cost : 0 };
-};
+}
 
-export const selectVentureTotals = (state) => {
-  const base = state.app.baseCurrency;
-  const rates = state.app.rates;
-  return state.personal.ventures.map((v) => {
-    const total = v.deployed.reduce(
-      (sum, d) => sum + convert(d.amount, d.currency, base, rates),
-      0
-    );
+export function computeVentureTotals(ventures, base, rates) {
+  return ventures.map((v) => {
+    let total = 0;
+    for (const d of v.deployed) total += convert(d.amount, d.currency, base, rates);
     return { ...v, deployedTotal: total };
   });
-};
+}
 
-// ════════════════════════════════════════════════════════════════════
-// SIDE EFFECTS
-// ════════════════════════════════════════════════════════════════════
 if (typeof window !== 'undefined') {
   const triggerSync = () => useStore.getState().syncQueue();
   window.addEventListener('online', () => {
