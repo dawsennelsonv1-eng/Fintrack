@@ -237,7 +237,7 @@ function AddBudgetSheet({ open, onClose }) {
                       className={`py-2 rounded-lg text-xs font-medium ${
                         currency === c.code ? 'bg-[var(--surface)] shadow-sm' : 'text-muted'
                       }`}>
-                      <span className="font-display mr-1">{c.symbol}</span>{c.code}
+                      {c.code === 'HTG' ? c.code : <><span className="font-display mr-1">{c.symbol}</span>{c.code}</>}
                     </button>
                   ))}
                 </div>
@@ -245,12 +245,15 @@ function AddBudgetSheet({ open, onClose }) {
                 <div className="bg-[var(--bg)] rounded-2xl px-5 py-6 text-center">
                   <div className="text-[10px] uppercase tracking-[0.14em] text-muted mb-2">Limit</div>
                   <div className="flex items-baseline justify-center gap-1">
-                    <span className="font-display text-3xl text-muted">{CURRENCIES[currency].symbol}</span>
+                    <span className="font-display text-3xl text-muted">{CURRENCIES[currency].prefix}</span>
                     <input
                       type="number" inputMode="decimal" step="0.01" min="0"
                       value={limit} onChange={(e) => setLimit(e.target.value)} placeholder="0"
                       className="w-full max-w-[200px] bg-transparent outline-none font-display text-5xl text-center num"
                     />
+                      {CURRENCIES[currency].suffix && (
+                        <span className="font-display text-3xl text-muted">{CURRENCIES[currency].suffix}</span>
+                    )}
                   </div>
                 </div>
 

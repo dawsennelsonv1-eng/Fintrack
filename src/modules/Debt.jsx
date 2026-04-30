@@ -4,17 +4,24 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, X, Trash2, AlertCircle, Check } from 'lucide-react';
 import {
   useStore,
-  selectDebts, selectTotalDebtInBase, selectBaseCurrency, selectRates,
+  selectDebts, selectDebtEvents, selectTotalDebtInBase, selectBaseCurrency, selectRates,
+  computeDebtsWithStatus,
 } from '../store/useStore';
 import { CURRENCIES, convert, formatMoney } from '../lib/currency';
 import { fadeUp, ease } from '../lib/util';
 
 export default function DebtModule() {
-  const debts        = useStore(selectDebts);
+  const rawDebts     = useStore(selectDebts);
+  const debtEvents   = useStore(selectDebtEvents);
   const totalDebt    = useStore(selectTotalDebtInBase);
   const baseCurrency = useStore(selectBaseCurrency);
   const rates        = useStore(selectRates);
   const removeDebt   = useStore((s) => s.removeDebt);
+
+  const debts = useMemo(
+    () => computeDebtsWithStatus(rawDebts, debtEvents, baseCurrency, rates),
+    [rawDebts, debtEvents, baseCurrency, rates]
+  );
 
   const [adding, setAdding] = useState(false);
 
@@ -103,10 +110,10 @@ function DebtRow({ debt, idx, baseCurrency, rates, onDelete }) {
   const recordRepayment = useStore((s) => s.recordRepayment);
   const [paying, setPaying] = useState(false);
   const [amount, setAmount] = useState('');
+  const [showHistory, setShowHistory] = useState(false);
 
-  const remaining = debt.principal - debt.repaid;
-  const pct = debt.principal > 0 ? debt.repaid / debt.principal : 0;
-  const remainingBase = convert(remaining, debt.currency, baseCurrency, rates);
+  const { remaining, remainingBase, repaid, events = [] } = debt;
+  const pct = debt.principal > 0 ? repaid / debt.principal : 0;
   const isPaid = remaining <= 0;
 
   const submit = (e) => {
@@ -168,10 +175,18 @@ function DebtRow({ debt, idx, baseCurrency, rates, onDelete }) {
 
       {!isPaid && (
         <>
-          <button onClick={() => setPaying((v) => !v)}
-            className="w-full text-xs py-2 rounded-lg bg-[var(--bg)] hover:bg-[var(--border)] transition-colors">
-            {paying ? 'Cancel' : 'Record repayment'}
-          </button>
+          <div className="flex gap-2">
+            <button onClick={() => setPaying((v) => !v)}
+              className="flex-1 text-xs py-2 rounded-lg bg-[var(--bg)] hover:bg-[var(--border)] transition-colors">
+              {paying ? 'Cancel' : 'Record repayment'}
+            </button>
+            {events.length > 0 && (
+              <button onClick={() => setShowHistory((v) => !v)}
+                className="px-3 text-xs py-2 rounded-lg bg-[var(--bg)] hover:bg-[var(--border)] transition-colors">
+                {events.length} payment{events.length === 1 ? '' : 's'}
+              </button>
+            )}
+          </div>
           <AnimatePresence>
             {paying && (
               <motion.form
@@ -191,6 +206,32 @@ function DebtRow({ debt, idx, baseCurrency, rates, onDelete }) {
             )}
           </AnimatePresence>
         </>
+      )}
+
+      {(isPaid || events.length > 0) && (showHistory || isPaid) && (
+        <motion.div
+          initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
+          className="mt-3 pt-3 border-t border-[var(--border)] space-y-1.5"
+        >
+          <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1">Payment history</div>
+          {events.map((ev) => (
+            <div key={ev.id} className="flex items-center justify-between text-[11px] num">
+              <span className="text-muted">
+                {new Date(ev.date).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' })}
+              </span>
+              <div className="flex items-center gap-3">
+                <span className="text-accent-income">−{formatMoney(ev.amount, ev.currency)}</span>
+                <span className="text-muted">→ {formatMoney(ev.balanceAfter, ev.currency)} left</span>
+              </div>
+            </div>
+          ))}
+        </motion.div>
+      )}
+
+      {!isPaid && events.length > 0 && !showHistory && (
+        <button onClick={() => setShowHistory(true)} className="w-full text-[11px] text-muted hover:text-[var(--text)] mt-2">
+          Show payment history
+        </button>
       )}
     </motion.div>
   );
@@ -246,7 +287,7 @@ function AddDebtSheet({ open, onClose }) {
                       className={`py-2 rounded-lg text-xs font-medium ${
                         currency === c.code ? 'bg-[var(--surface)] shadow-sm' : 'text-muted'
                       }`}>
-                      <span className="font-display mr-1">{c.symbol}</span>{c.code}
+                      {c.code === 'HTG' ? c.code : <>{c.code === 'HTG' ? c.code : <><span className="font-display mr-1">{c.symbol}</span>{c.code}</>}</>}
                     </button>
                   ))}
                 </div>
@@ -254,10 +295,13 @@ function AddDebtSheet({ open, onClose }) {
                 <div className="bg-[var(--bg)] rounded-2xl px-5 py-6 text-center">
                   <div className="text-[10px] uppercase tracking-[0.14em] text-muted mb-2">Principal</div>
                   <div className="flex items-baseline justify-center gap-1">
-                    <span className="font-display text-3xl text-muted">{CURRENCIES[currency].symbol}</span>
+                    <span className="font-display text-3xl text-muted">{CURRENCIES[currency].prefix}</span>
                     <input type="number" inputMode="decimal" step="0.01" min="0"
                       value={principal} onChange={(e) => setPrincipal(e.target.value)} placeholder="0"
                       className="w-full max-w-[200px] bg-transparent outline-none font-display text-5xl text-center num" />
+                      {CURRENCIES[currency].suffix && (
+                        <span className="font-display text-3xl text-muted">{CURRENCIES[currency].suffix}</span>
+                    )}
                   </div>
                 </div>
 

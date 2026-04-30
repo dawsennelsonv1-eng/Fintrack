@@ -5,7 +5,7 @@ import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis
 import { Plus, X, TrendingUp, TrendingDown, Briefcase, Coins, LineChart as LineIcon, Trash2, Rocket, ArrowUpRight } from 'lucide-react';
 import {
   useStore,
-  selectInvestments, selectVentures,
+  selectInvestments, selectVentures, selectVentureEvents,
   selectBaseCurrency, selectRates,
   computeInvestmentTotals, computeVentureTotals,
 } from '../store/useStore';
@@ -25,11 +25,12 @@ const VENTURE_PALETTE = ['#5b8def', '#d4a942', '#3d8b5f', '#9b59b6', '#e07a5f', 
 export default function Investments() {
   const investments    = useStore(selectInvestments);
   const venturesRaw    = useStore(selectVentures);
+  const ventureEvents  = useStore(selectVentureEvents);
   const baseCurrency   = useStore(selectBaseCurrency);
   const rates          = useStore(selectRates);
 
   const totals   = useMemo(() => computeInvestmentTotals(investments, baseCurrency, rates), [investments, baseCurrency, rates]);
-  const ventures = useMemo(() => computeVentureTotals(venturesRaw, baseCurrency, rates), [venturesRaw, baseCurrency, rates]);
+  const ventures = useMemo(() => computeVentureTotals(venturesRaw, ventureEvents, baseCurrency, rates), [venturesRaw, ventureEvents, baseCurrency, rates]);
 
   const [addingAsset, setAddingAsset] = useState(false);
   const [addingVenture, setAddingVenture] = useState(false);
@@ -278,7 +279,7 @@ function VentureCard({ venture, accent, baseCurrency, rates, totalDeployed }) {
   const [note, setNote] = useState('');
 
   const pct = totalDeployed > 0 ? (venture.deployedTotal / totalDeployed) * 100 : 0;
-  const recent = venture.deployed.slice(-5).reverse();
+  const recent = (venture.deployments || []).slice(-5).reverse();
 
   const handleDeploy = (e) => {
     e.preventDefault();
