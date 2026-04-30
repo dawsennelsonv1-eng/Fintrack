@@ -2,7 +2,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, X, ArrowDownLeft, ArrowUpRight } from 'lucide-react';
-import { useStore, selectRates, selectBaseCurrency } from '../store/useStore';
+import {
+  useStore, selectRates, selectBaseCurrency, selectEditingTxId, selectTransactions,
+} from '../store/useStore';
 import { CURRENCIES, convert, formatMoney } from '../lib/currency';
 
 const CATEGORIES = {
@@ -20,13 +22,32 @@ export default function QuickAdd() {
   const amountRef = useRef(null);
 
   const addTransaction = useStore((s) => s.addTransaction);
+  const updateTransaction = useStore((s) => s.updateTransaction);
+  const setEditingTx = useStore((s) => s.setEditingTx);
+  const editingId = useStore(selectEditingTxId);
+  const transactions = useStore(selectTransactions);
   const rates = useStore(selectRates);
   const baseCurrency = useStore(selectBaseCurrency);
 
-  useEffect(() => { setCategory(CATEGORIES[type][0]); }, [type]);
+  const editingTx = editingId ? transactions.find((t) => t.id === editingId) : null;
+  const isEditing = !!editingTx;
+
+  // Open the sheet automatically when an edit is requested
   useEffect(() => {
-    if (open) setTimeout(() => amountRef.current?.focus(), 250);
-  }, [open]);
+    if (editingTx) {
+      setType(editingTx.type);
+      setAmount(String(editingTx.amount));
+      setCurrency(editingTx.currency || 'USD');
+      setCategory(editingTx.category);
+      setNotes(editingTx.notes || '');
+      setOpen(true);
+    }
+  }, [editingId]);
+
+  useEffect(() => { if (!isEditing) setCategory(CATEGORIES[type][0]); }, [type, isEditing]);
+  useEffect(() => {
+    if (open && !isEditing) setTimeout(() => amountRef.current?.focus(), 250);
+  }, [open, isEditing]);
   useEffect(() => {
     if (open) {
       const prev = document.body.style.overflow;
@@ -35,21 +56,35 @@ export default function QuickAdd() {
     }
   }, [open]);
 
-  const reset = () => { setAmount(''); setNotes(''); setType('expense'); setCurrency('USD'); };
+  const reset = () => {
+    setAmount(''); setNotes(''); setType('expense'); setCurrency('USD');
+    setCategory(CATEGORIES.expense[0]);
+  };
+
+  const closeSheet = () => {
+    setOpen(false);
+    if (isEditing) setEditingTx(null);
+    setTimeout(reset, 250);
+  };
 
   const handleSubmit = (e) => {
     e.preventDefault();
     const value = parseFloat(amount);
     if (!value || value <= 0) return;
-    addTransaction({
-      amount: value, currency, category, type, notes: notes.trim(),
-      date: new Date().toISOString(),
-    });
-    reset();
-    setOpen(false);
+
+    if (isEditing) {
+      updateTransaction(editingTx.id, {
+        amount: value, currency, category, type, notes: notes.trim(),
+      });
+    } else {
+      addTransaction({
+        amount: value, currency, category, type, notes: notes.trim(),
+        date: new Date().toISOString(),
+      });
+    }
+    closeSheet();
   };
 
-  // Live conversion preview
   const previewBase = amount && currency !== baseCurrency
     ? convert(parseFloat(amount) || 0, currency, baseCurrency, rates)
     : null;
@@ -71,7 +106,7 @@ export default function QuickAdd() {
             <motion.div
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               transition={{ duration: 0.2 }}
-              onClick={() => setOpen(false)}
+              onClick={closeSheet}
               className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm"
             />
             <motion.div
@@ -81,7 +116,7 @@ export default function QuickAdd() {
               dragConstraints={{ top: 0, bottom: 0 }}
               dragElastic={{ top: 0, bottom: 0.4 }}
               onDragEnd={(_, info) => {
-                if (info.offset.y > 120 || info.velocity.y > 600) setOpen(false);
+                if (info.offset.y > 120 || info.velocity.y > 600) closeSheet();
               }}
               className="fixed bottom-0 left-0 right-0 z-50 surface border-t rounded-t-3xl pb-[env(safe-area-inset-bottom)] max-h-[92vh] overflow-y-auto no-scrollbar"
             >
@@ -91,9 +126,11 @@ export default function QuickAdd() {
 
               <div className="px-5 pt-2 pb-6">
                 <div className="flex items-center justify-between mb-5">
-                  <h2 className="font-display text-2xl">New entry</h2>
+                  <h2 className="font-display text-2xl">
+                    {isEditing ? 'Edit entry' : 'New entry'}
+                  </h2>
                   <button
-                    onClick={() => setOpen(false)}
+                    onClick={closeSheet}
                     className="w-8 h-8 rounded-full hover:bg-[var(--bg)] flex items-center justify-center"
                   >
                     <X size={16} />
@@ -101,7 +138,6 @@ export default function QuickAdd() {
                 </div>
 
                 <form onSubmit={handleSubmit} className="space-y-4">
-                  {/* Type toggle */}
                   <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-[var(--bg)]">
                     <button
                       type="button" onClick={() => setType('expense')}
@@ -121,7 +157,6 @@ export default function QuickAdd() {
                     </button>
                   </div>
 
-                  {/* Currency picker */}
                   <div className="grid grid-cols-3 gap-2 p-1 rounded-xl bg-[var(--bg)]">
                     {Object.values(CURRENCIES).map((c) => (
                       <button
@@ -132,12 +167,11 @@ export default function QuickAdd() {
                             : 'text-muted'
                         }`}
                       >
-                        <span className="font-display">{c.symbol}</span> {c.code}
+                        <span className="font-display mr-1">{c.symbol}</span> {c.code}
                       </button>
                     ))}
                   </div>
 
-                  {/* Amount */}
                   <div className="bg-[var(--bg)] rounded-2xl px-5 py-6 text-center">
                     <div className="text-[10px] uppercase tracking-[0.14em] text-muted mb-2">Amount</div>
                     <div className="flex items-baseline justify-center gap-1">
@@ -159,7 +193,6 @@ export default function QuickAdd() {
                     )}
                   </div>
 
-                  {/* Category */}
                   <div>
                     <div className="text-[10px] uppercase tracking-[0.14em] text-muted mb-2 px-1">Category</div>
                     <div className="flex flex-wrap gap-1.5">
@@ -188,7 +221,7 @@ export default function QuickAdd() {
                     type="submit" disabled={!amount || parseFloat(amount) <= 0}
                     className="w-full py-3.5 rounded-xl bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 font-medium text-sm disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.99] transition-transform"
                   >
-                    Save entry
+                    {isEditing ? 'Save changes' : 'Save entry'}
                   </button>
                 </form>
               </div>
