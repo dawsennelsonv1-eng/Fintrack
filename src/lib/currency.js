@@ -1,16 +1,43 @@
 // src/lib/currency.js
-// Multi-currency engine for USD / HTG / HTD ($ht — Haitian Dollar)
+// Multi-currency engine for USD / HTG / HTD
+//
+// Display formats:
+//   USD: $1000          (prefix only)
+//   HTG: HTG1000        (prefix only, "HTG" code itself as the symbol)
+//   HTD: $1000 ht       (hybrid: "$" prefix + " ht" suffix)
+//
 // Default rates (user-editable in store):
 //   1 USD = 150 HTG
 //   1 HTD = 5 HTG  →  1 USD = 30 HTD
-//
-// Strategy: every transaction stores `amount` and `currency` (original).
-// All aggregations convert via `toBase()` using current rates.
 
+// `symbol` is the short label shown in pickers/chips.
+// `prefix` + `suffix` are used when formatting amounts.
+// USD uses $ as both. HTG uses "HTG" (no separate symbol). HTD uses "$ ht" as the symbol.
 export const CURRENCIES = {
-  USD: { code: 'USD', symbol: '$',   label: 'US Dollar',       decimals: 2 },
-  HTG: { code: 'HTG', symbol: 'G',   label: 'Haitian Gourde',  decimals: 0 },
-  HTD: { code: 'HTD', symbol: '$ht', label: 'Haitian Dollar',  decimals: 0 },
+  USD: {
+    code: 'USD',
+    label: 'US Dollar',
+    decimals: 2,
+    prefix: '$',
+    suffix: '',
+    symbol: '$',
+  },
+  HTG: {
+    code: 'HTG',
+    label: 'Haitian Gourde',
+    decimals: 0,
+    prefix: 'HTG',
+    suffix: '',
+    symbol: 'HTG',
+  },
+  HTD: {
+    code: 'HTD',
+    label: 'Haitian Dollar',
+    decimals: 0,
+    prefix: '$',
+    suffix: ' ht',
+    symbol: '$ ht',
+  },
 };
 
 export const DEFAULT_RATES = {
@@ -46,22 +73,18 @@ export function formatMoney(amount, currency = 'USD', opts = {}) {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   });
-  // Symbol position: USD/HTD prefix, HTG suffix
-  if (currency === 'HTG') return `${sign}${abs} ${cfg.symbol}`;
-  return `${sign}${cfg.symbol}${abs}`;
+  return `${sign}${cfg.prefix}${abs}${cfg.suffix}`;
 }
 
-// Compact form for hero displays: $1.2K, $3.4M
+// Compact form for hero displays
 export function formatCompact(amount, currency = 'USD') {
   const cfg = CURRENCIES[currency] || CURRENCIES.USD;
   const abs = Math.abs(amount);
-  let value, suffix;
-  if (abs >= 1_000_000) { value = amount / 1_000_000; suffix = 'M'; }
-  else if (abs >= 10_000) { value = amount / 1_000; suffix = 'K'; }
+  let value, k;
+  if (abs >= 1_000_000) { value = amount / 1_000_000; k = 'M'; }
+  else if (abs >= 10_000) { value = amount / 1_000; k = 'K'; }
   else { return formatMoney(amount, currency); }
   const sign = amount < 0 ? '−' : '';
   const num = Math.abs(value).toFixed(value < 10 ? 1 : 0);
-  return currency === 'HTG'
-    ? `${sign}${num}${suffix} ${cfg.symbol}`
-    : `${sign}${cfg.symbol}${num}${suffix}`;
+  return `${sign}${cfg.prefix}${num}${k}${cfg.suffix}`;
 }
