@@ -167,7 +167,7 @@ export default function QuickAdd() {
                             : 'text-muted'
                         }`}
                       >
-                        <span className="font-display mr-1">{c.symbol}</span> {c.code}
+                        {c.code === 'HTG' ? c.code : <><span className="font-display mr-1">{c.symbol}</span>{c.code}</>}
                       </button>
                     ))}
                   </div>

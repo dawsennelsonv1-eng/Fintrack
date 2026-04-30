@@ -97,8 +97,10 @@ export default function Header() {
             className="px-3 py-1.5 rounded-full surface border text-xs font-medium hover:scale-105 active:scale-95 transition-transform"
             title="Cycle base currency"
           >
-            <span className="font-display mr-1">{CURRENCIES[baseCurrency].symbol}</span>
-            {baseCurrency}
+            {baseCurrency === 'HTG' ? <>{baseCurrency}</> : <>
+              <span className="font-display mr-1">{CURRENCIES[baseCurrency].symbol}</span>
+              {baseCurrency}
+            </>}
           </button>
           <button
             onClick={toggleTheme}
