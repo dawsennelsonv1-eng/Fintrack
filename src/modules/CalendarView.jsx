@@ -8,6 +8,7 @@ import {
 } from '../store/useStore';
 import { convert, formatMoney } from '../lib/currency';
 import { fadeUp, ease, isSameDay } from '../lib/util';
+import { useTxActions } from '../components/TxActions';
 
 const WEEK = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 
@@ -33,7 +34,6 @@ export default function CalendarView() {
     return cells;
   }, [cursor]);
 
-  // Aggregate per-day income/expense
   const dayMap = useMemo(() => {
     const map = {};
     for (const t of transactions) {
@@ -69,6 +69,8 @@ export default function CalendarView() {
     setCursor(next);
   };
 
+  const { bind, sheet } = useTxActions();
+
   return (
     <main className="max-w-2xl mx-auto px-5 pt-4 pb-32">
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease }} className="mb-5">
@@ -76,7 +78,6 @@ export default function CalendarView() {
         <h1 className="font-display text-4xl">Time machine</h1>
       </motion.section>
 
-      {/* Month summary */}
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.05 }}
         className="grid grid-cols-2 gap-3 mb-4">
         <div className="surface border rounded-2xl p-4">
@@ -93,7 +94,6 @@ export default function CalendarView() {
         </div>
       </motion.section>
 
-      {/* Calendar grid */}
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.1 }}
         className="surface border rounded-2xl p-4 mb-5">
         <div className="flex items-center justify-between mb-3">
@@ -136,16 +136,10 @@ export default function CalendarView() {
                   : 'hover:bg-[var(--bg)]'
                 }`}
               >
-                {/* Glow background for activity */}
                 {!isSelected && (hasIncome || hasExpense) && (
                   <div className="absolute inset-0 rounded-lg overflow-hidden pointer-events-none">
-                    {hasIncome && (
-                      <div className="absolute inset-0 bg-accent-income/10" />
-                    )}
-                    {hasExpense && (
-                      <div className="absolute inset-0 bg-accent-expense/10"
-                           style={{ mixBlendMode: hasIncome ? 'normal' : undefined }} />
-                    )}
+                    {hasIncome && <div className="absolute inset-0 bg-accent-income/10" />}
+                    {hasExpense && <div className="absolute inset-0 bg-accent-expense/10" />}
                   </div>
                 )}
                 <span className="relative text-sm font-medium num">{d.getDate()}</span>
@@ -161,7 +155,6 @@ export default function CalendarView() {
         </div>
       </motion.section>
 
-      {/* Selected day detail */}
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.15 }}>
         <div className="flex items-baseline justify-between mb-3 px-1">
           <div>
@@ -195,7 +188,11 @@ export default function CalendarView() {
               {selectedTxs.map((t) => {
                 const isIncome = t.type === 'income';
                 return (
-                  <li key={t.id} className="flex items-center gap-3 px-4 py-3.5">
+                  <li
+                    key={t.id}
+                    {...bind(t)}
+                    className="flex items-center gap-3 px-4 py-3.5 select-none cursor-pointer active:bg-[var(--bg)] transition-colors"
+                  >
                     <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
                       isIncome ? 'bg-accent-income/10 text-accent-income' : 'bg-accent-expense/10 text-accent-expense'
                     }`}>
@@ -217,6 +214,8 @@ export default function CalendarView() {
           )}
         </AnimatePresence>
       </motion.section>
+
+      {sheet}
     </main>
   );
 }

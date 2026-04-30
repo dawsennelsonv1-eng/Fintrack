@@ -14,6 +14,7 @@ import {
 import { convert, formatMoney, formatCompact } from '../lib/currency';
 import { fadeUp, ease, relativeTime } from '../lib/util';
 import SyncBadge from '../components/SyncBadge';
+import { useTxActions } from '../components/TxActions';
 
 export default function Dashboard() {
   const transactions = useStore(selectTransactions);
@@ -36,6 +37,8 @@ export default function Dashboard() {
 
   const series = useMemo(() => buildSeries(transactions, baseCurrency, rates, 30), [transactions, baseCurrency, rates]);
   const recent = transactions.slice(0, 6);
+
+  const { bind, sheet } = useTxActions();
 
   return (
     <main className="max-w-2xl mx-auto px-5 pt-4 pb-32">
@@ -125,10 +128,15 @@ export default function Dashboard() {
           </div>
         ) : (
           <ul className="surface border rounded-2xl divide-y divide-[var(--border)] overflow-hidden">
-            {recent.map((t) => <Row key={t.id} tx={t} baseCurrency={baseCurrency} rates={rates} />)}
+            {recent.map((t) => (
+              <Row key={t.id} tx={t} baseCurrency={baseCurrency} rates={rates} bind={bind} />
+            ))}
           </ul>
         )}
+        <p className="text-[11px] text-muted text-center mt-3">Long-press a transaction to edit or delete</p>
       </motion.section>
+
+      {sheet}
     </main>
   );
 }
@@ -192,12 +200,15 @@ function StatCard({ label, value, tone, icon: Icon, currency, subtle }) {
   );
 }
 
-function Row({ tx, baseCurrency, rates }) {
+function Row({ tx, baseCurrency, rates, bind }) {
   const isIncome = tx.type === 'income';
   const inBase = convert(Math.abs(tx.amount), tx.currency || 'USD', baseCurrency, rates);
   const showConversion = (tx.currency || 'USD') !== baseCurrency;
   return (
-    <li className="flex items-center gap-3 px-4 py-3.5">
+    <li
+      {...bind(tx)}
+      className="flex items-center gap-3 px-4 py-3.5 select-none cursor-pointer active:bg-[var(--bg)] transition-colors"
+    >
       <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
         isIncome ? 'bg-accent-income/10 text-accent-income' : 'bg-accent-expense/10 text-accent-expense'
       }`}>
