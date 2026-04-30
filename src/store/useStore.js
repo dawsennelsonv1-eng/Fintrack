@@ -19,6 +19,7 @@ const appSlice = (set, get) => ({
     baseCurrency: 'USD',
     rates: { ...DEFAULT_RATES },
     debtAcknowledged: false,
+    editingTxId: null,        // ← NEW: which transaction is being edited
   },
   setWorkspace: (workspace) => set((s) => ({ app: { ...s.app, workspace } })),
   setTheme: (theme) => set((s) => ({ app: { ...s.app, theme } })),
@@ -29,6 +30,7 @@ const appSlice = (set, get) => ({
   setRate: (currency, value) =>
     set((s) => ({ app: { ...s.app, rates: { ...s.app.rates, [currency]: Number(value) } } })),
   acknowledgeDebt: () => set((s) => ({ app: { ...s.app, debtAcknowledged: true } })),
+  setEditingTx: (id) => set((s) => ({ app: { ...s.app, editingTxId: id } })),
 });
 
 const personalSlice = (set, get) => ({
@@ -42,6 +44,7 @@ const personalSlice = (set, get) => ({
     lastSyncAt: null,
     syncing: false,
     syncError: null,
+    lastDeleted: null,        // ← NEW: for undo
   },
 
   addTransaction: (input) => {
@@ -68,17 +71,73 @@ const personalSlice = (set, get) => ({
     return tx;
   },
 
+  // NEW — edit an existing transaction
+  updateTransaction: (id, patch) => {
+    let updated = null;
+    set((s) => ({
+      personal: {
+        ...s.personal,
+        transactions: s.personal.transactions.map((t) => {
+          if (t.id !== id) return t;
+          updated = {
+            ...t,
+            ...patch,
+            amount: patch.amount !== undefined ? Number(patch.amount) : t.amount,
+            updatedAt: nowISO(),
+            _pending: true,
+          };
+          return updated;
+        }),
+      },
+    }));
+    if (updated) {
+      set((s) => ({
+        personal: {
+          ...s.personal,
+          queue: [...s.personal.queue, { action: 'update', ...stripMeta(updated) }],
+        },
+      }));
+      get().syncQueue();
+    }
+    return updated;
+  },
+
   deleteTransaction: (id) => {
+    const tx = get().personal.transactions.find((t) => t.id === id);
     set((s) => ({
       personal: {
         ...s.personal,
         transactions: s.personal.transactions.filter((t) => t.id !== id),
         queue: [...s.personal.queue, { action: 'delete', id }],
+        lastDeleted: tx ? { tx, deletedAt: Date.now() } : s.personal.lastDeleted,
       },
     }));
     get().syncQueue();
   },
 
+  // NEW — undo the last delete (within 5s)
+  undoDelete: () => {
+    const last = get().personal.lastDeleted;
+    if (!last) return null;
+    const tx = { ...last.tx, _pending: true, updatedAt: nowISO() };
+    set((s) => ({
+      personal: {
+        ...s.personal,
+        transactions: [tx, ...s.personal.transactions]
+          .sort((a, b) => new Date(b.date) - new Date(a.date)),
+        queue: [...s.personal.queue, { action: 'create', ...stripMeta(tx) }],
+        lastDeleted: null,
+      },
+    }));
+    get().syncQueue();
+    return tx;
+  },
+
+  clearLastDeleted: () => {
+    set((s) => ({ personal: { ...s.personal, lastDeleted: null } }));
+  },
+
+  // ─── Budgets ───────────────────────────────────────────────
   addBudget: ({ category, limit, currency = 'USD', period = 'monthly' }) => {
     const b = { id: uid('bdg'), category, limit: Number(limit), currency, period, createdAt: nowISO() };
     set((s) => ({ personal: { ...s.personal, budgets: [...s.personal.budgets, b] } }));
@@ -93,6 +152,7 @@ const personalSlice = (set, get) => ({
     set((s) => ({ personal: { ...s.personal, budgets: s.personal.budgets.filter((b) => b.id !== id) } }));
   },
 
+  // ─── Debts ─────────────────────────────────────────────────
   addDebt: ({ creditor, principal, currency = 'USD', dueDate, notes = '' }) => {
     const d = {
       id: uid('debt'), creditor, principal: Number(principal), currency,
@@ -115,6 +175,7 @@ const personalSlice = (set, get) => ({
     set((s) => ({ personal: { ...s.personal, debts: s.personal.debts.filter((d) => d.id !== id) } }));
   },
 
+  // ─── Investments ───────────────────────────────────────────
   addInvestment: ({ kind, name, units, costBasis, currentPrice, currency = 'USD' }) => {
     const inv = {
       id: uid('inv'), kind, name,
@@ -137,9 +198,12 @@ const personalSlice = (set, get) => ({
     }));
   },
   removeInvestment: (id) => {
-    set((s) => ({ personal: { ...s.personal, investments: s.personal.investments.filter((i) => i.id !== id) } }));
+    set((s) => ({
+      personal: { ...s.personal, investments: s.personal.investments.filter((i) => i.id !== id) },
+    }));
   },
 
+  // ─── Ventures ──────────────────────────────────────────────
   addVenture: ({ name, notes = '' }) => {
     const v = {
       id: uid('vnt'), name, notes,
@@ -172,6 +236,7 @@ const personalSlice = (set, get) => ({
     set((s) => ({ personal: { ...s.personal, ventures: s.personal.ventures.filter((v) => v.id !== id) } }));
   },
 
+  // ─── Sync ──────────────────────────────────────────────────
   hydrate: async () => {
     try {
       const { transactions } = await api.fetchAll();
@@ -205,6 +270,7 @@ const personalSlice = (set, get) => ({
     if (get().personal.syncing) return;
     const queue = get().personal.queue;
     if (queue.length === 0) return;
+
     set((s) => ({ personal: { ...s.personal, syncing: true, syncError: null } }));
     try {
       const { results = [] } = await api.bulk(queue);
@@ -225,6 +291,10 @@ const personalSlice = (set, get) => ({
         app: { ...s.app, online: !(err instanceof ApiError && err.status === 0) },
       }));
     }
+  },
+
+  clearQueue: () => {
+    set((s) => ({ personal: { ...s.personal, queue: [], syncError: null } }));
   },
 });
 
@@ -266,21 +336,20 @@ export const useStore = create()(
       merge: (persisted, current) => ({
         ...current,
         ...persisted,
-        app: { ...current.app, ...(persisted?.app || {}) },
+        app: { ...current.app, ...(persisted?.app || {}), editingTxId: null },
         personal: {
           ...current.personal,
           ...(persisted?.personal || {}),
           syncing: false,
           syncError: null,
+          lastDeleted: null,
         },
       }),
     }
   )
 );
 
-// ════════════════════════════════════════════════════════════════════
-// SIMPLE SELECTORS — return primitives or stable refs
-// ════════════════════════════════════════════════════════════════════
+// Selectors
 export const selectTransactions = (s) => s.personal.transactions;
 export const selectBudgets = (s) => s.personal.budgets;
 export const selectDebts = (s) => s.personal.debts;
@@ -293,8 +362,9 @@ export const selectTheme = (s) => s.app.theme;
 export const selectQueueSize = (s) => s.personal.queue.length;
 export const selectIsSyncing = (s) => s.personal.syncing;
 export const selectIsOnline = (s) => s.app.online;
+export const selectEditingTxId = (s) => s.app.editingTxId;
+export const selectLastDeleted = (s) => s.personal.lastDeleted;
 
-// Total debt — returns a NUMBER (primitive), safe as a selector
 export const selectTotalDebtInBase = (state) => {
   const base = state.app.baseCurrency;
   const rates = state.app.rates;
@@ -305,10 +375,6 @@ export const selectTotalDebtInBase = (state) => {
   return sum;
 };
 
-// ════════════════════════════════════════════════════════════════════
-// PURE COMPUTATION HELPERS — call inside useMemo from components
-// (Do NOT pass these to useStore — they return new objects every call)
-// ════════════════════════════════════════════════════════════════════
 export function computeMonthSummary(transactions, base, rates) {
   const monthStart = new Date();
   monthStart.setDate(1);
