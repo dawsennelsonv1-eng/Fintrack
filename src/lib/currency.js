@@ -26,8 +26,8 @@ export const CURRENCIES = {
     code: 'HTG',
     label: 'Haitian Gourde',
     decimals: 0,
-    prefix: 'HTG',
-    suffix: '',
+    prefix: '',
+    suffix: ' HTG',
     symbol: 'HTG',
   },
   HTD: {
