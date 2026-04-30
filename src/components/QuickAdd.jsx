@@ -175,13 +175,16 @@ export default function QuickAdd() {
                   <div className="bg-[var(--bg)] rounded-2xl px-5 py-6 text-center">
                     <div className="text-[10px] uppercase tracking-[0.14em] text-muted mb-2">Amount</div>
                     <div className="flex items-baseline justify-center gap-1">
-                      <span className="font-display text-3xl text-muted">{CURRENCIES[currency].symbol}</span>
+                      <span className="font-display text-3xl text-muted">{CURRENCIES[currency].prefix}</span>
                       <input
                         ref={amountRef} type="number" inputMode="decimal" step="0.01" min="0"
                         value={amount} onChange={(e) => setAmount(e.target.value)}
                         placeholder="0"
                         className="w-full max-w-[200px] bg-transparent outline-none font-display text-5xl text-center num"
                       />
+                      {CURRENCIES[currency].suffix && (
+                        <span className="font-display text-3xl text-muted">{CURRENCIES[currency].suffix}</span>
+                      )}
                     </div>
                     {previewBase !== null && (
                       <motion.div
