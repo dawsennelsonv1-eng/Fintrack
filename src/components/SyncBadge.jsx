@@ -16,6 +16,7 @@ export default function SyncBadge() {
   const lastSyncAt = useStore((s) => s.personal.lastSyncAt);
   const triggerSync = useStore((s) => s.syncQueue);
   const triggerHydrate = useStore((s) => s.hydrate);
+  const clearQueue = useStore((s) => s.clearQueue);
 
   let state = 'synced';
   if (!online) state = 'offline';
@@ -87,15 +88,23 @@ export default function SyncBadge() {
                 <div className="mt-3 pt-3 border-t border-[var(--border)]">
                   <div className="font-medium mb-1.5">Queued operations</div>
                   <ul className="space-y-1 max-h-40 overflow-y-auto no-scrollbar">
-                    {queue.slice(0, 5).map((op, i) => (
+                    {queue.slice(0, 8).map((op, i) => (
                       <li key={i} className="text-[11px] text-muted truncate">
                         <span className="font-mono">{op.action}</span>
+                        {op.entity && <span className="text-[10px] ml-1 text-[var(--text)]/60">[{op.entity}]</span>}
                         {op.amount !== undefined && ` · ${op.amount} ${op.currency || 'USD'}`}
                         {op.category && ` · ${op.category}`}
+                        {op.name && ` · ${op.name}`}
+                        {op.creditor && ` · ${op.creditor}`}
                       </li>
                     ))}
-                    {queue.length > 5 && <li className="text-[10px] text-muted">+{queue.length - 5} more</li>}
+                    {queue.length > 8 && <li className="text-[10px] text-muted">+{queue.length - 8} more</li>}
                   </ul>
+                  {syncError && (
+                    <div className="mt-2 px-2 py-1.5 rounded-md bg-accent-expense/10 text-accent-expense text-[10px]">
+                      {syncError}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -113,6 +122,18 @@ export default function SyncBadge() {
                   Pull from sheet
                 </button>
               </div>
+              {queue.length > 0 && (
+                <button
+                  onClick={() => {
+                    if (confirm(`Discard all ${queue.length} pending operations? This won't delete data already in the sheet, but unsynced changes will be lost.`)) {
+                      clearQueue();
+                    }
+                  }}
+                  className="w-full mt-2 px-2 py-1.5 rounded-lg text-accent-expense hover:bg-accent-expense/10 transition-colors text-[11px] font-medium"
+                >
+                  Clear stuck queue
+                </button>
+              )}
             </motion.div>
           </>
         )}
