@@ -3,8 +3,9 @@ import { useMemo } from 'react';
 import { motion } from 'framer-motion';
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+  PieChart, Pie, Cell,
 } from 'recharts';
-import { ArrowDownLeft, ArrowUpRight, Wallet, TrendingUp, AlertCircle } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, Wallet, TrendingUp, AlertCircle, PieChart as PieIcon } from 'lucide-react';
 import {
   useStore,
   selectTransactions, selectInvestments,
@@ -115,6 +116,14 @@ export default function Dashboard() {
         </div>
       </motion.section>
 
+      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.13 }} className="mb-6">
+        <SpendingBreakdown
+          transactions={transactions}
+          baseCurrency={baseCurrency}
+          rates={rates}
+        />
+      </motion.section>
+
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.15 }}>
         <div className="flex items-baseline justify-between mb-3 px-1">
           <h2 className="font-display text-2xl">Recent</h2>
@@ -138,6 +147,161 @@ export default function Dashboard() {
 
       {sheet}
     </main>
+  );
+}
+
+// Editorial palette — calm earthy/jewel tones, not skittles
+const PIE_COLORS = [
+  '#c2452f', // burnt red
+  '#d4a942', // ochre
+  '#3d8b5f', // forest
+  '#5b8def', // dusty blue
+  '#9b59b6', // plum
+  '#e07a5f', // terracotta
+  '#7a8a8c', // slate
+  '#2c8d9c', // teal
+  '#a67c5a', // taupe
+  '#9aa3ad', // pewter
+];
+
+function SpendingBreakdown({ transactions, baseCurrency, rates }) {
+  const { incomeData, expenseData, totalIncome, totalExpense } = useMemo(() => {
+    const monthStart = new Date();
+    monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+    const inc = {}, exp = {};
+    let totalIn = 0, totalEx = 0;
+    for (const t of transactions) {
+      if (new Date(t.date) < monthStart) continue;
+      if (t.type === 'transfer') continue;
+      const v = convert(Math.abs(t.amount), t.currency || 'USD', baseCurrency, rates);
+      const cat = t.category || 'Other';
+      if (t.type === 'income')  { inc[cat] = (inc[cat] || 0) + v; totalIn += v; }
+      if (t.type === 'expense') { exp[cat] = (exp[cat] || 0) + v; totalEx += v; }
+    }
+    const toData = (m) => Object.entries(m)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+    return {
+      incomeData: toData(inc),
+      expenseData: toData(exp),
+      totalIncome: totalIn,
+      totalExpense: totalEx,
+    };
+  }, [transactions, baseCurrency, rates]);
+
+  const hasAnyData = incomeData.length > 0 || expenseData.length > 0;
+
+  return (
+    <div className="surface border rounded-2xl p-5">
+      <div className="flex items-baseline justify-between mb-4">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">Breakdown</div>
+          <div className="font-display text-2xl mt-0.5">By category</div>
+        </div>
+        <span className="text-[11px] text-muted">This month</span>
+      </div>
+
+      {!hasAnyData ? (
+        <div className="py-8 text-center">
+          <PieIcon size={24} className="mx-auto text-muted mb-2" strokeWidth={1.5} />
+          <div className="text-sm text-muted">No activity this month yet</div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-3">
+          <CategoryPie
+            data={incomeData}
+            total={totalIncome}
+            label="Income"
+            currency={baseCurrency}
+            tone="income"
+          />
+          <CategoryPie
+            data={expenseData}
+            total={totalExpense}
+            label="Expenses"
+            currency={baseCurrency}
+            tone="expense"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CategoryPie({ data, total, label, currency, tone }) {
+  const isEmpty = data.length === 0;
+  const toneClass = tone === 'income' ? 'text-accent-income' : 'text-accent-expense';
+
+  return (
+    <div className="bg-[var(--bg)] rounded-xl p-3">
+      <div className="flex items-baseline justify-between mb-2">
+        <span className="text-[10px] uppercase tracking-[0.1em] text-muted font-semibold">{label}</span>
+        <span className={`text-[11px] num font-medium ${toneClass}`}>
+          {tone === 'income' ? '+' : '−'}{formatCompact(total, currency)}
+        </span>
+      </div>
+
+      {isEmpty ? (
+        <div className="h-32 flex items-center justify-center text-[11px] text-muted">
+          None
+        </div>
+      ) : (
+        <>
+          <div className="h-32 -mx-1">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={data}
+                  dataKey="value"
+                  cx="50%" cy="50%"
+                  innerRadius={32}
+                  outerRadius={56}
+                  paddingAngle={2}
+                  isAnimationActive
+                  animationDuration={600}
+                  stroke="none"
+                >
+                  {data.map((_, i) => (
+                    <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip content={<PieTip currency={currency} total={total} />} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+          <ul className="space-y-1 mt-1">
+            {data.slice(0, 4).map((d, i) => {
+              const pct = total > 0 ? (d.value / total) * 100 : 0;
+              return (
+                <li key={d.name} className="flex items-center gap-1.5 text-[10px]">
+                  <span
+                    className="w-1.5 h-1.5 rounded-full shrink-0"
+                    style={{ backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }}
+                  />
+                  <span className="truncate flex-1">{d.name}</span>
+                  <span className="num text-muted">{pct.toFixed(0)}%</span>
+                </li>
+              );
+            })}
+            {data.length > 4 && (
+              <li className="text-[10px] text-muted pl-3">+{data.length - 4} more</li>
+            )}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+function PieTip({ active, payload, currency, total }) {
+  if (!active || !payload?.length) return null;
+  const { name, value } = payload[0].payload;
+  const pct = total > 0 ? (value / total) * 100 : 0;
+  return (
+    <div className="surface border rounded-lg px-2.5 py-1.5 shadow-lg text-[11px] num">
+      <div className="font-medium">{name}</div>
+      <div className="text-muted">{formatMoney(value, currency)} · {pct.toFixed(1)}%</div>
+    </div>
   );
 }
 
