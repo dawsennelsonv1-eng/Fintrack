@@ -21,7 +21,7 @@ function enqueue(set, get, entity, action, payload) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// DEFAULT BUCKETS — Carter's NBA Accounting (user's adjusted version)
+// DEFAULT BUCKETS
 // ════════════════════════════════════════════════════════════════════
 export const DEFAULT_BUCKETS = [
   { key: 'warChest',   name: 'War Chest',          percentage: 50, color: '#d4a942', icon: 'TrendingUp', order: 1 },
@@ -31,34 +31,56 @@ export const DEFAULT_BUCKETS = [
   { key: 'baller',     name: 'Baller',             percentage: 5,  color: '#9b59b6', icon: 'Sparkles',   order: 5 },
 ];
 
-// Maps spending categories to default bucket keys.
-// Used for auto-routing expenses. User can override per-transaction.
+// ════════════════════════════════════════════════════════════════════
+// DEFAULT CATEGORIES — used until user customizes
+// ════════════════════════════════════════════════════════════════════
+export const DEFAULT_CATEGORIES = [
+  // Expenses
+  { name: 'Food & Dining',  type: 'expense', icon: 'UtensilsCrossed', color: '#e07a5f', bucketKey: 'operations', order: 1 },
+  { name: 'Transport',      type: 'expense', icon: 'Car',             color: '#5b8def', bucketKey: 'operations', order: 2 },
+  { name: 'Housing',        type: 'expense', icon: 'Home',            color: '#a67c5a', bucketKey: 'operations', order: 3 },
+  { name: 'Health',         type: 'expense', icon: 'Heart',           color: '#c2452f', bucketKey: 'operations', order: 4 },
+  { name: 'Subscriptions',  type: 'expense', icon: 'CreditCard',      color: '#7a8a8c', bucketKey: 'operations', order: 5 },
+  { name: 'Shopping',       type: 'expense', icon: 'ShoppingBag',     color: '#9b59b6', bucketKey: 'operations', order: 6 },
+  { name: 'Education',      type: 'expense', icon: 'BookOpen',        color: '#d4a942', bucketKey: 'warChest',   order: 7 },
+  { name: 'Investment',     type: 'expense', icon: 'TrendingUp',      color: '#d4a942', bucketKey: 'warChest',   order: 8 },
+  { name: 'Entertainment',  type: 'expense', icon: 'Sparkles',        color: '#9b59b6', bucketKey: 'baller',     order: 9 },
+  { name: 'Gift',           type: 'expense', icon: 'Gift',            color: '#e07a5f', bucketKey: 'giving',     order: 10 },
+  { name: 'Other',          type: 'expense', icon: 'MoreHorizontal',  color: '#7a8a8c', bucketKey: 'operations', order: 99 },
+  // Income
+  { name: 'Salary',         type: 'income',  icon: 'Briefcase',       color: '#3d8b5f', bucketKey: '', order: 1 },
+  { name: 'Freelance',      type: 'income',  icon: 'Laptop',          color: '#3d8b5f', bucketKey: '', order: 2 },
+  { name: 'Investment',     type: 'income',  icon: 'TrendingUp',      color: '#d4a942', bucketKey: '', order: 3 },
+  { name: 'Gift',           type: 'income',  icon: 'Gift',            color: '#e07a5f', bucketKey: '', order: 4 },
+  { name: 'Other',          type: 'income',  icon: 'MoreHorizontal',  color: '#7a8a8c', bucketKey: '', order: 99 },
+];
+
 export const CATEGORY_TO_BUCKET = {
-  // Operations — daily life
   'Food & Dining':  'operations',
   'Transport':      'operations',
   'Housing':        'operations',
   'Health':         'operations',
   'Subscriptions':  'operations',
   'Shopping':       'operations',
-  // War Chest — investments in self/business
   'Education':      'warChest',
   'Investment':     'warChest',
-  // Baller — fun
   'Entertainment':  'baller',
-  // Giving
   'Gift':           'giving',
-  // Default
   'Other':          'operations',
-  // Income categories — N/A, income gets auto-split
   'Salary':         null,
   'Freelance':      null,
 };
 
-/**
- * Auto-split an income amount across the buckets by their percentages.
- * Returns { warChest: 50, operations: 30, ... }
- */
+// Build runtime category-to-bucket map from user's custom categories,
+// falling back to defaults
+export function buildCategoryToBucket(categories) {
+  const map = { ...CATEGORY_TO_BUCKET };
+  for (const c of categories) {
+    if (c.type === 'expense' && c.bucketKey) map[c.name] = c.bucketKey;
+  }
+  return map;
+}
+
 export function autoSplitIncome(amount, buckets) {
   const enabled = buckets.filter((b) => b.enabled !== false).sort((a, b) => a.order - b.order);
   const totalPct = enabled.reduce((sum, b) => sum + b.percentage, 0);
@@ -67,7 +89,6 @@ export function autoSplitIncome(amount, buckets) {
   let allocated = 0;
   enabled.forEach((b, i) => {
     if (i === enabled.length - 1) {
-      // Last bucket gets the remainder to ensure exact total
       split[b.key] = Math.round((amount - allocated) * 100) / 100;
     } else {
       const portion = Math.round((amount * b.percentage / totalPct) * 100) / 100;
@@ -78,13 +99,117 @@ export function autoSplitIncome(amount, buckets) {
   return split;
 }
 
-/**
- * Auto-route an expense to the appropriate bucket based on category.
- * Returns { operations: -80 } for an $80 grocery expense, etc.
- */
-export function autoSplitExpense(amount, category) {
-  const bucketKey = CATEGORY_TO_BUCKET[category] || 'operations';
+export function autoSplitExpense(amount, category, categoryMap = CATEGORY_TO_BUCKET) {
+  const bucketKey = categoryMap[category] || 'operations';
   return { [bucketKey]: -Math.abs(amount) };
+}
+
+// ════════════════════════════════════════════════════════════════════
+// RECURRING ENGINE — compute next due date based on frequency
+// ════════════════════════════════════════════════════════════════════
+export function computeNextDueAt(recurring, fromDate = new Date()) {
+  const from = new Date(fromDate);
+  const interval = Math.max(1, Number(recurring.interval) || 1);
+  const result = new Date(from);
+
+  switch (recurring.frequency) {
+    case 'daily': {
+      result.setDate(result.getDate() + interval);
+      break;
+    }
+    case 'weekly': {
+      // If specific weekdays are set, find the next matching one
+      const days = (recurring.daysOfWeek || '').split(',').map(Number).filter(d => !isNaN(d) && d >= 0 && d <= 6);
+      if (days.length > 0) {
+        // Find next weekday from today
+        let addDays = 1;
+        while (addDays <= 7 * interval) {
+          const candidate = new Date(from);
+          candidate.setDate(candidate.getDate() + addDays);
+          if (days.includes(candidate.getDay())) {
+            return candidate.toISOString();
+          }
+          addDays++;
+        }
+      }
+      result.setDate(result.getDate() + 7 * interval);
+      break;
+    }
+    case 'monthly': {
+      result.setMonth(result.getMonth() + interval);
+      const targetDay = Number(recurring.dayOfMonth) || from.getDate();
+      // Cap to last day of resulting month
+      const lastDayOfMonth = new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate();
+      result.setDate(Math.min(targetDay, lastDayOfMonth));
+      break;
+    }
+    case 'yearly': {
+      result.setFullYear(result.getFullYear() + interval);
+      break;
+    }
+    default:
+      result.setMonth(result.getMonth() + 1);
+  }
+  return result.toISOString();
+}
+
+// Process all due recurring schedules — spawn pending entries
+export function tickRecurring(recurring, existingPending) {
+  const now = new Date();
+  const newPending = [];
+  const updates = [];
+
+  for (const r of recurring) {
+    if (r.paused) continue;
+    if (r.endDate && new Date(r.endDate) < now) continue;
+    if (!r.nextDueAt) continue;
+
+    let nextDue = new Date(r.nextDueAt);
+    let lastFired = r.lastFiredAt;
+    let firedThisTick = false;
+
+    // Catch up — generate one pending per missed cycle
+    while (nextDue <= now) {
+      // Idempotency check: don't double-spawn for same recurring + dueAt
+      const dupe = existingPending.find(
+        (p) => p.recurringId === r.id && p.dueAt === nextDue.toISOString()
+      );
+      if (!dupe) {
+        newPending.push({
+          id: uid('pnd'),
+          recurringId: r.id,
+          name: r.name,
+          amount: r.amount,
+          currency: r.currency,
+          type: r.type,
+          category: r.category,
+          notes: r.notes || '',
+          tags: r.tags || '',
+          dueAt: nextDue.toISOString(),
+          status: 'pending',
+          createdAt: nowISO(),
+          updatedAt: nowISO(),
+        });
+      }
+      lastFired = nextDue.toISOString();
+      const next = computeNextDueAt(r, nextDue);
+      nextDue = new Date(next);
+      firedThisTick = true;
+      // Safety: don't generate more than 50 missed entries in one tick
+      if (newPending.length > 50) break;
+    }
+
+    if (firedThisTick) {
+      updates.push({
+        ...r,
+        lastFiredAt: lastFired,
+        nextDueAt: nextDue.toISOString(),
+        updatedAt: nowISO(),
+      });
+    }
+  }
+
+  return { newPending, updates };
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -100,6 +225,9 @@ const appSlice = (set, get) => ({
     rates: { ...DEFAULT_RATES },
     debtAcknowledged: false,
     editingTxId: null,
+    searchQuery: '',
+    searchOpen: false,
+    settingsOpen: false,
   },
   setWorkspace: (workspace) => set((s) => ({ app: { ...s.app, workspace } })),
   setTheme: (theme) => set((s) => ({ app: { ...s.app, theme } })),
@@ -111,6 +239,9 @@ const appSlice = (set, get) => ({
     set((s) => ({ app: { ...s.app, rates: { ...s.app.rates, [currency]: Number(value) } } })),
   acknowledgeDebt: () => set((s) => ({ app: { ...s.app, debtAcknowledged: true } })),
   setEditingTx: (id) => set((s) => ({ app: { ...s.app, editingTxId: id } })),
+  setSearchQuery: (q) => set((s) => ({ app: { ...s.app, searchQuery: q } })),
+  setSearchOpen: (open) => set((s) => ({ app: { ...s.app, searchOpen: open, searchQuery: open ? s.app.searchQuery : '' } })),
+  setSettingsOpen: (open) => set((s) => ({ app: { ...s.app, settingsOpen: open } })),
 });
 
 // ════════════════════════════════════════════════════════════════════
@@ -128,14 +259,18 @@ const personalSlice = (set, get) => ({
     ventureEvents:    [],
     buckets:          [],
     goals:            [],
+    recurring:        [],
+    pending:          [],
+    templates:        [],
+    categories:       [],
     queue: [],
     lastSyncAt: null,
+    lastTickAt: null,
     syncing: false,
     syncError: null,
     lastDeleted: null,
   },
 
-  // ─── Initialize default buckets (call once on first load) ──
   initializeBuckets: () => {
     const existing = get().personal.buckets;
     if (existing.length > 0) return;
@@ -150,31 +285,51 @@ const personalSlice = (set, get) => ({
     newBuckets.forEach((b) => enqueue(set, get, 'bucket', 'create', b));
   },
 
+  initializeCategories: () => {
+    const existing = get().personal.categories;
+    if (existing.length > 0) return;
+    const newCats = DEFAULT_CATEGORIES.map((c) => ({
+      ...c,
+      id: uid('cat'),
+      enabled: true,
+      createdAt: nowISO(),
+      updatedAt: nowISO(),
+    }));
+    set((s) => ({ personal: { ...s.personal, categories: newCats } }));
+    newCats.forEach((c) => enqueue(set, get, 'category', 'create', c));
+  },
+
   // ─── Transactions ─────────────────────────────────────────
-  // Now auto-computes the buckets field for income (auto-split) and expenses (auto-route)
   addTransaction: (input) => {
     const buckets = get().personal.buckets;
-    let bucketAllocation = input.buckets;
+    const categories = get().personal.categories;
+    const categoryMap = buildCategoryToBucket(categories);
 
-    // If no manual override, compute defaults
+    let bucketAllocation = input.buckets;
     if (!bucketAllocation) {
       if (input.type === 'income') {
         bucketAllocation = autoSplitIncome(Number(input.amount), buckets);
       } else if (input.type === 'expense') {
-        bucketAllocation = autoSplitExpense(Number(input.amount), input.category);
+        bucketAllocation = autoSplitExpense(Number(input.amount), input.category, categoryMap);
       } else {
         bucketAllocation = {};
       }
     }
 
+    // Normalize tags: array → comma-separated string for storage
+    let tagsStr = '';
+    if (Array.isArray(input.tags)) tagsStr = input.tags.filter(Boolean).join(',');
+    else if (typeof input.tags === 'string') tagsStr = input.tags;
+
     const tx = {
-      id: uid('tx'),
+      id: input.id || uid('tx'),
       date: input.date || nowISO(),
       amount: Number(input.amount),
       currency: input.currency || 'USD',
       category: input.category || 'Other',
       type: input.type,
       notes: input.notes || '',
+      tags: tagsStr,
       buckets: bucketAllocation,
       createdAt: nowISO(),
       updatedAt: nowISO(),
@@ -188,6 +343,9 @@ const personalSlice = (set, get) => ({
   updateTransaction: (id, patch) => {
     let updated = null;
     const buckets = get().personal.buckets;
+    const categories = get().personal.categories;
+    const categoryMap = buildCategoryToBucket(categories);
+
     set((s) => ({
       personal: {
         ...s.personal,
@@ -197,7 +355,6 @@ const personalSlice = (set, get) => ({
           const newType     = patch.type     !== undefined ? patch.type     : t.type;
           const newCategory = patch.category !== undefined ? patch.category : t.category;
 
-          // Recompute buckets if amount/type/category changed and no explicit buckets in patch
           let newBuckets = patch.buckets !== undefined ? patch.buckets : t.buckets;
           if (patch.buckets === undefined && (
             patch.amount !== undefined ||
@@ -205,7 +362,12 @@ const personalSlice = (set, get) => ({
             patch.category !== undefined
           )) {
             if (newType === 'income') newBuckets = autoSplitIncome(newAmount, buckets);
-            else if (newType === 'expense') newBuckets = autoSplitExpense(newAmount, newCategory);
+            else if (newType === 'expense') newBuckets = autoSplitExpense(newAmount, newCategory, categoryMap);
+          }
+
+          let newTags = t.tags;
+          if (patch.tags !== undefined) {
+            newTags = Array.isArray(patch.tags) ? patch.tags.filter(Boolean).join(',') : patch.tags;
           }
 
           updated = {
@@ -213,6 +375,7 @@ const personalSlice = (set, get) => ({
             amount: newAmount,
             type: newType,
             category: newCategory,
+            tags: newTags,
             buckets: newBuckets,
             updatedAt: nowISO(),
             _pending: true,
@@ -271,7 +434,6 @@ const personalSlice = (set, get) => ({
     if (updated) enqueue(set, get, 'bucket', 'update', updated);
   },
 
-  // Special transaction type for moving money between buckets
   transferBetweenBuckets: ({ fromKey, toKey, amount, currency = 'USD', notes = '' }) => {
     const tx = {
       id: uid('tx'),
@@ -281,6 +443,7 @@ const personalSlice = (set, get) => ({
       category: 'Transfer',
       type: 'transfer',
       notes: notes || `${fromKey} → ${toKey}`,
+      tags: '',
       buckets: { [fromKey]: -Math.abs(amount), [toKey]: Math.abs(amount) },
       createdAt: nowISO(),
       updatedAt: nowISO(),
@@ -295,20 +458,12 @@ const personalSlice = (set, get) => ({
   addGoal: ({ bucketKey, name, target, currency = 'USD', priority, parallel = false }) => {
     const bucketGoals = get().personal.goals.filter((g) => g.bucketKey === bucketKey && g.status === 'active');
     const nextPriority = priority || bucketGoals.length + 1;
-
     const goal = {
-      id: uid('goal'),
-      bucketKey,
-      name,
-      target: Number(target),
-      currency,
-      priority: nextPriority,
-      parallel,
-      status: 'active',
-      claimedAt: '',
-      claimedAmount: 0,
-      createdAt: nowISO(),
-      updatedAt: nowISO(),
+      id: uid('goal'), bucketKey, name,
+      target: Number(target), currency,
+      priority: nextPriority, parallel,
+      status: 'active', claimedAt: '', claimedAmount: 0,
+      createdAt: nowISO(), updatedAt: nowISO(),
     };
     set((s) => ({ personal: { ...s.personal, goals: [...s.personal.goals, goal] } }));
     enqueue(set, get, 'goal', 'create', goal);
@@ -351,35 +506,25 @@ const personalSlice = (set, get) => ({
     updates.forEach((g) => enqueue(set, get, 'goal', 'update', g));
   },
 
-  // Mark a goal as claimed — creates an expense transaction for it
   claimGoal: (id, { actualAmount } = {}) => {
     const goal = get().personal.goals.find((g) => g.id === id);
     if (!goal) return null;
     const amount = actualAmount !== undefined ? Number(actualAmount) : goal.target;
-
-    // Create an expense transaction routed to the goal's bucket
     const tx = {
-      id: uid('tx'),
-      date: nowISO(),
-      amount,
+      id: uid('tx'), date: nowISO(), amount,
       currency: goal.currency,
-      category: 'Goal',
-      type: 'expense',
+      category: 'Goal', type: 'expense',
       notes: `🎯 ${goal.name}`,
+      tags: '',
       buckets: { [goal.bucketKey]: -Math.abs(amount) },
-      createdAt: nowISO(),
-      updatedAt: nowISO(),
+      createdAt: nowISO(), updatedAt: nowISO(),
       _pending: true,
     };
     set((s) => ({ personal: { ...s.personal, transactions: [tx, ...s.personal.transactions] } }));
     enqueue(set, get, 'transaction', 'create', stripMeta(tx));
-
-    // Mark the goal as claimed
     const updated = {
-      ...goal,
-      status: 'claimed',
-      claimedAt: nowISO(),
-      claimedAmount: amount,
+      ...goal, status: 'claimed',
+      claimedAt: nowISO(), claimedAmount: amount,
       updatedAt: nowISO(),
     };
     set((s) => ({
@@ -397,12 +542,368 @@ const personalSlice = (set, get) => ({
     enqueue(set, get, 'goal', 'delete', { id });
   },
 
-  // ─── Budgets (legacy — kept for category caps inside Operations) ──
-  addBudget: ({ category, limit, currency = 'USD', period = 'monthly' }) => {
+  // ─── Recurring schedules ──────────────────────────────────
+  addRecurring: (input) => {
+    const startDate = input.startDate || nowISO();
+    const recurring = {
+      id: uid('rec'),
+      name: input.name,
+      amount: Number(input.amount),
+      currency: input.currency || 'USD',
+      type: input.type, // 'income' | 'expense'
+      category: input.category || 'Other',
+      notes: input.notes || '',
+      tags: Array.isArray(input.tags) ? input.tags.join(',') : (input.tags || ''),
+      frequency: input.frequency || 'monthly', // daily, weekly, monthly, yearly
+      interval: Number(input.interval) || 1,
+      dayOfMonth: Number(input.dayOfMonth) || new Date(startDate).getDate(),
+      daysOfWeek: input.daysOfWeek || '', // comma-separated 0-6
+      startDate,
+      endDate: input.endDate || '',
+      lastFiredAt: '',
+      nextDueAt: input.nextDueAt || startDate,
+      paused: false,
+      createdAt: nowISO(),
+      updatedAt: nowISO(),
+    };
+    set((s) => ({ personal: { ...s.personal, recurring: [...s.personal.recurring, recurring] } }));
+    enqueue(set, get, 'recurring', 'create', recurring);
+    // Tick immediately so any due entries appear right away
+    setTimeout(() => get().tickRecurringSchedules(), 50);
+    return recurring;
+  },
+
+  updateRecurring: (id, patch) => {
+    let updated = null;
+    set((s) => ({
+      personal: {
+        ...s.personal,
+        recurring: s.personal.recurring.map((r) => {
+          if (r.id !== id) return r;
+          updated = { ...r, ...patch, updatedAt: nowISO() };
+          // Recompute nextDueAt if frequency-related fields changed
+          if (
+            patch.frequency !== undefined ||
+            patch.interval !== undefined ||
+            patch.dayOfMonth !== undefined ||
+            patch.daysOfWeek !== undefined
+          ) {
+            updated.nextDueAt = computeNextDueAt(updated, new Date());
+          }
+          return updated;
+        }),
+      },
+    }));
+    if (updated) enqueue(set, get, 'recurring', 'update', updated);
+  },
+
+  toggleRecurringPaused: (id) => {
+    const r = get().personal.recurring.find((x) => x.id === id);
+    if (!r) return;
+    get().updateRecurring(id, { paused: !r.paused });
+  },
+
+  removeRecurring: (id) => {
+    set((s) => ({ personal: { ...s.personal, recurring: s.personal.recurring.filter((r) => r.id !== id) } }));
+    enqueue(set, get, 'recurring', 'delete', { id });
+  },
+
+  // Tick — generate pending entries from due recurring schedules
+  tickRecurringSchedules: () => {
+    const { recurring, pending } = get().personal;
+    const { newPending, updates } = tickRecurring(recurring, pending);
+    if (newPending.length === 0 && updates.length === 0) return;
+
+    set((s) => ({
+      personal: {
+        ...s.personal,
+        pending: [...s.personal.pending, ...newPending],
+        recurring: s.personal.recurring.map((r) => {
+          const upd = updates.find((u) => u.id === r.id);
+          return upd || r;
+        }),
+        lastTickAt: nowISO(),
+      },
+    }));
+
+    newPending.forEach((p) => enqueue(set, get, 'pending', 'create', p));
+    updates.forEach((r) => enqueue(set, get, 'recurring', 'update', r));
+  },
+
+  // ─── Pending entries ──────────────────────────────────────
+  confirmPending: (id, overrides = {}) => {
+    const p = get().personal.pending.find((x) => x.id === id);
+    if (!p) return null;
+    // Use the override date if provided, otherwise the dueAt
+    const date = overrides.date || p.dueAt;
+    const tx = get().addTransaction({
+      date,
+      amount: overrides.amount !== undefined ? overrides.amount : p.amount,
+      currency: overrides.currency || p.currency,
+      type: overrides.type || p.type,
+      category: overrides.category || p.category,
+      notes: overrides.notes !== undefined ? overrides.notes : p.notes,
+      tags: overrides.tags !== undefined ? overrides.tags : p.tags,
+    });
+    // Mark pending as confirmed and remove from list
+    const upd = { ...p, status: 'confirmed', updatedAt: nowISO() };
+    set((s) => ({
+      personal: {
+        ...s.personal,
+        pending: s.personal.pending.filter((x) => x.id !== id),
+      },
+    }));
+    enqueue(set, get, 'pending', 'update', upd);
+    return tx;
+  },
+
+  skipPending: (id) => {
+    const p = get().personal.pending.find((x) => x.id === id);
+    if (!p) return;
+    const upd = { ...p, status: 'skipped', updatedAt: nowISO() };
+    set((s) => ({
+      personal: {
+        ...s.personal,
+        pending: s.personal.pending.filter((x) => x.id !== id),
+      },
+    }));
+    enqueue(set, get, 'pending', 'update', upd);
+  },
+
+  removePending: (id) => {
+    set((s) => ({
+      personal: { ...s.personal, pending: s.personal.pending.filter((x) => x.id !== id) },
+    }));
+    enqueue(set, get, 'pending', 'delete', { id });
+  },
+
+  // ─── Templates ────────────────────────────────────────────
+  addTemplate: ({ name, amount, currency = 'USD', type, category, notes = '', tags = '', icon = 'Coffee', color = '#7a8a8c' }) => {
+    const t = {
+      id: uid('tpl'),
+      name,
+      amount: Number(amount),
+      currency,
+      type,
+      category,
+      notes,
+      tags: Array.isArray(tags) ? tags.join(',') : tags,
+      icon,
+      color,
+      useCount: 0,
+      lastUsedAt: '',
+      createdAt: nowISO(),
+      updatedAt: nowISO(),
+    };
+    set((s) => ({ personal: { ...s.personal, templates: [...s.personal.templates, t] } }));
+    enqueue(set, get, 'template', 'create', t);
+    return t;
+  },
+
+  updateTemplate: (id, patch) => {
+    let updated = null;
+    set((s) => ({
+      personal: {
+        ...s.personal,
+        templates: s.personal.templates.map((t) => {
+          if (t.id !== id) return t;
+          updated = { ...t, ...patch, updatedAt: nowISO() };
+          return updated;
+        }),
+      },
+    }));
+    if (updated) enqueue(set, get, 'template', 'update', updated);
+  },
+
+  removeTemplate: (id) => {
+    set((s) => ({ personal: { ...s.personal, templates: s.personal.templates.filter((t) => t.id !== id) } }));
+    enqueue(set, get, 'template', 'delete', { id });
+  },
+
+  // Use a template — creates a transaction and bumps useCount
+  useTemplate: (id, dateOverride) => {
+    const t = get().personal.templates.find((x) => x.id === id);
+    if (!t) return null;
+    const tx = get().addTransaction({
+      date: dateOverride || nowISO(),
+      amount: t.amount,
+      currency: t.currency,
+      type: t.type,
+      category: t.category,
+      notes: t.notes,
+      tags: t.tags,
+    });
+    // Bump usage count
+    const upd = {
+      ...t,
+      useCount: (Number(t.useCount) || 0) + 1,
+      lastUsedAt: nowISO(),
+      updatedAt: nowISO(),
+    };
+    set((s) => ({
+      personal: {
+        ...s.personal,
+        templates: s.personal.templates.map((x) => (x.id === id ? upd : x)),
+      },
+    }));
+    enqueue(set, get, 'template', 'update', upd);
+    return tx;
+  },
+
+  // ─── Categories ───────────────────────────────────────────
+  addCategory: ({ name, type, icon = 'Tag', color = '#7a8a8c', bucketKey = '' }) => {
+    const c = {
+      id: uid('cat'),
+      name, type, icon, color, bucketKey,
+      order: get().personal.categories.filter((x) => x.type === type).length + 1,
+      enabled: true,
+      createdAt: nowISO(),
+      updatedAt: nowISO(),
+    };
+    set((s) => ({ personal: { ...s.personal, categories: [...s.personal.categories, c] } }));
+    enqueue(set, get, 'category', 'create', c);
+    return c;
+  },
+
+  updateCategory: (id, patch) => {
+    let updated = null;
+    set((s) => ({
+      personal: {
+        ...s.personal,
+        categories: s.personal.categories.map((c) => {
+          if (c.id !== id) return c;
+          updated = { ...c, ...patch, updatedAt: nowISO() };
+          return updated;
+        }),
+      },
+    }));
+    if (updated) enqueue(set, get, 'category', 'update', updated);
+  },
+
+  removeCategory: (id) => {
+    set((s) => ({ personal: { ...s.personal, categories: s.personal.categories.filter((c) => c.id !== id) } }));
+    enqueue(set, get, 'category', 'delete', { id });
+  },
+
+  reorderCategories: (orderedIds) => {
+    const updates = [];
+    set((s) => ({
+      personal: {
+        ...s.personal,
+        categories: s.personal.categories.map((c) => {
+          const newOrder = orderedIds.indexOf(c.id) + 1;
+          if (newOrder === 0 || newOrder === c.order) return c;
+          const upd = { ...c, order: newOrder, updatedAt: nowISO() };
+          updates.push(upd);
+          return upd;
+        }),
+      },
+    }));
+    updates.forEach((c) => enqueue(set, get, 'category', 'update', c));
+  },
+
+  // ─── Bucket CRUD ──────────────────────────────────────────
+  addBucket: ({ key, name, percentage, color = '#7a8a8c', icon = 'Wallet' }) => {
+    const existing = get().personal.buckets;
+    const order = existing.length + 1;
     const b = {
-      id: uid('bdg'), category, limit: Number(limit), currency, period,
+      id: uid('bkt'), key, name, percentage: Number(percentage),
+      color, icon, order, enabled: true,
       createdAt: nowISO(), updatedAt: nowISO(),
     };
+    set((s) => ({ personal: { ...s.personal, buckets: [...s.personal.buckets, b] } }));
+    enqueue(set, get, 'bucket', 'create', b);
+    return b;
+  },
+
+  removeBucket: (id) => {
+    set((s) => ({ personal: { ...s.personal, buckets: s.personal.buckets.filter((b) => b.id !== id) } }));
+    enqueue(set, get, 'bucket', 'delete', { id });
+  },
+
+  resetBucketsToDefaults: () => {
+    const existing = get().personal.buckets;
+    // Delete all existing
+    existing.forEach((b) => enqueue(set, get, 'bucket', 'delete', { id: b.id }));
+    // Re-seed defaults
+    const defaults = DEFAULT_BUCKETS.map((b) => ({
+      ...b, id: uid('bkt'), enabled: true,
+      createdAt: nowISO(), updatedAt: nowISO(),
+    }));
+    set((s) => ({ personal: { ...s.personal, buckets: defaults } }));
+    defaults.forEach((b) => enqueue(set, get, 'bucket', 'create', b));
+  },
+
+  // Replace buckets in bulk (for percentage rebalancing)
+  updateBucketPercentages: (updates /* { [id]: percentage } */) => {
+    const updated = [];
+    set((s) => ({
+      personal: {
+        ...s.personal,
+        buckets: s.personal.buckets.map((b) => {
+          if (updates[b.id] === undefined) return b;
+          const pct = Math.max(0, Math.min(100, Number(updates[b.id])));
+          if (pct === b.percentage) return b;
+          const upd = { ...b, percentage: pct, updatedAt: nowISO() };
+          updated.push(upd);
+          return upd;
+        }),
+      },
+    }));
+    updated.forEach((b) => enqueue(set, get, 'bucket', 'update', b));
+  },
+
+  // ─── Local data utilities ─────────────────────────────────
+  exportAllData: () => {
+    const s = get();
+    return {
+      exportedAt: nowISO(),
+      version: 5,
+      personal: {
+        transactions:     s.personal.transactions,
+        budgets:          s.personal.budgets,
+        debts:            s.personal.debts,
+        debtEvents:       s.personal.debtEvents,
+        investments:      s.personal.investments,
+        investmentEvents: s.personal.investmentEvents,
+        ventures:         s.personal.ventures,
+        ventureEvents:    s.personal.ventureEvents,
+        buckets:          s.personal.buckets,
+        goals:            s.personal.goals,
+        recurring:        s.personal.recurring,
+        templates:        s.personal.templates,
+        categories:       s.personal.categories,
+      },
+      app: {
+        baseCurrency: s.app.baseCurrency,
+        rates:        s.app.rates,
+        theme:        s.app.theme,
+      },
+    };
+  },
+
+  resetLocalData: async () => {
+    // Wipe localStorage and re-fetch from sheet
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem('fintrack-v2');
+    }
+    set((s) => ({
+      personal: {
+        ...s.personal,
+        transactions: [], budgets: [], debts: [], debtEvents: [],
+        investments: [], investmentEvents: [],
+        ventures: [], ventureEvents: [],
+        buckets: [], goals: [],
+        recurring: [], pending: [], templates: [], categories: [],
+        queue: [], lastDeleted: null,
+      },
+    }));
+    await get().hydrate();
+  },
+
+  // ─── Budgets (legacy) ─────────────────────────────────────
+  addBudget: ({ category, limit, currency = 'USD', period = 'monthly' }) => {
+    const b = { id: uid('bdg'), category, limit: Number(limit), currency, period, createdAt: nowISO(), updatedAt: nowISO() };
     set((s) => ({ personal: { ...s.personal, budgets: [...s.personal.budgets, b] } }));
     enqueue(set, get, 'budget', 'create', b);
     return b;
@@ -449,7 +950,6 @@ const personalSlice = (set, get) => ({
     const baseCurrency = get().app.baseCurrency;
     const rates        = get().app.rates;
     const balanceAfterBase = convert(balanceAfter, debt.currency, baseCurrency, rates);
-
     const event = {
       id: uid('devt'), debtId, type: 'repayment',
       amount: cappedAmount, currency: debt.currency,
@@ -458,7 +958,6 @@ const personalSlice = (set, get) => ({
     };
     set((s) => ({ personal: { ...s.personal, debtEvents: [...s.personal.debtEvents, event] } }));
     enqueue(set, get, 'debtEvent', 'create', event);
-
     if (balanceAfter <= 0 && debt.status !== 'paid') {
       const updated = { ...debt, status: 'paid', updatedAt: nowISO() };
       set((s) => ({
@@ -495,7 +994,6 @@ const personalSlice = (set, get) => ({
     if (!inv) return null;
     const previousPrice = inv.currentPrice;
     const newPrice = Number(currentPrice);
-
     const updated = { ...inv, currentPrice: newPrice, updatedAt: nowISO() };
     set((s) => ({
       personal: {
@@ -504,7 +1002,6 @@ const personalSlice = (set, get) => ({
       },
     }));
     enqueue(set, get, 'investment', 'update', updated);
-
     const event = {
       id: uid('ievt'), investmentId: id, type: 'priceUpdate',
       price: newPrice, previousPrice, currency: inv.currency,
@@ -521,15 +1018,11 @@ const personalSlice = (set, get) => ({
 
   // ─── Ventures ─────────────────────────────────────────────
   addVenture: ({ name, notes = '' }) => {
-    const v = {
-      id: uid('vnt'), name, notes, status: 'active',
-      createdAt: nowISO(), updatedAt: nowISO(),
-    };
+    const v = { id: uid('vnt'), name, notes, status: 'active', createdAt: nowISO(), updatedAt: nowISO() };
     set((s) => ({ personal: { ...s.personal, ventures: [...s.personal.ventures, v] } }));
     enqueue(set, get, 'venture', 'create', v);
     return v;
   },
-
   deployToVenture: (ventureId, { amount, currency = 'USD', note = '' }) => {
     const event = {
       id: uid('vevt'), ventureId, type: 'deploy',
@@ -540,7 +1033,6 @@ const personalSlice = (set, get) => ({
     enqueue(set, get, 'ventureEvent', 'create', event);
     return event;
   },
-
   setVentureStatus: (id, status) => {
     let updated = null;
     set((s) => ({
@@ -555,7 +1047,6 @@ const personalSlice = (set, get) => ({
     }));
     if (updated) enqueue(set, get, 'venture', 'update', updated);
   },
-
   removeVenture: (id) => {
     set((s) => ({ personal: { ...s.personal, ventures: s.personal.ventures.filter((v) => v.id !== id) } }));
     enqueue(set, get, 'venture', 'delete', { id });
@@ -573,6 +1064,7 @@ const personalSlice = (set, get) => ({
         ...t,
         currency: t.currency || 'USD',
         buckets: t.buckets || {},
+        tags: t.tags || '',
       }));
 
       set((s) => ({
@@ -591,25 +1083,25 @@ const personalSlice = (set, get) => ({
           ventureEvents:    data.ventureEvents    || s.personal.ventureEvents,
           buckets:          (data.buckets && data.buckets.length) ? data.buckets : s.personal.buckets,
           goals:            data.goals            || s.personal.goals,
+          recurring:        data.recurring        || s.personal.recurring,
+          pending:          data.pending          || s.personal.pending,
+          templates:        data.templates        || s.personal.templates,
+          categories:       (data.categories && data.categories.length) ? data.categories : s.personal.categories,
           lastSyncAt: nowISO(),
           syncError: null,
         },
         app: { ...s.app, online: true },
       }));
 
-      // If buckets are still empty after sync, seed with defaults
-      if (get().personal.buckets.length === 0) {
-        get().initializeBuckets();
-      }
+      if (get().personal.buckets.length === 0) get().initializeBuckets();
+      if (get().personal.categories.length === 0) get().initializeCategories();
     } catch (err) {
       set((s) => ({
         personal: { ...s.personal, syncError: err.message },
         app: { ...s.app, online: !(err instanceof ApiError && err.status === 0) },
       }));
-      // Even on hydrate failure, seed buckets so UI works offline
-      if (get().personal.buckets.length === 0) {
-        get().initializeBuckets();
-      }
+      if (get().personal.buckets.length === 0) get().initializeBuckets();
+      if (get().personal.categories.length === 0) get().initializeCategories();
     }
   },
 
@@ -660,7 +1152,7 @@ export const useStore = create()(
     {
       name: 'fintrack-v2',
       storage: createJSONStorage(() => localStorage),
-      version: 4,
+      version: 5,
       partialize: (s) => ({
         app: {
           workspace: s.app.workspace,
@@ -681,8 +1173,13 @@ export const useStore = create()(
           ventureEvents:    s.personal.ventureEvents,
           buckets:          s.personal.buckets,
           goals:            s.personal.goals,
+          recurring:        s.personal.recurring,
+          pending:          s.personal.pending,
+          templates:        s.personal.templates,
+          categories:       s.personal.categories,
           queue:            s.personal.queue,
           lastSyncAt:       s.personal.lastSyncAt,
+          lastTickAt:       s.personal.lastTickAt,
         },
         business: s.business,
       }),
@@ -697,8 +1194,11 @@ export const useStore = create()(
           ventureEvents:    p.personal.ventureEvents    || [],
           buckets:          p.personal.buckets          || [],
           goals:            p.personal.goals            || [],
+          recurring:        p.personal.recurring        || [],
+          pending:          p.personal.pending          || [],
+          templates:        p.personal.templates        || [],
+          categories:       p.personal.categories       || [],
         };
-        // v2 → v3 venture migration
         if (Array.isArray(p.personal.ventures)) {
           const events = [...(p.personal.ventureEvents || [])];
           p.personal.ventures = p.personal.ventures.map((v) => {
@@ -720,11 +1220,11 @@ export const useStore = create()(
           });
           p.personal.ventureEvents = events;
         }
-        // v3 → v4: ensure transactions have a buckets field (default empty)
         if (Array.isArray(p.personal.transactions)) {
           p.personal.transactions = p.personal.transactions.map((t) => ({
             ...t,
             buckets: t.buckets || {},
+            tags: t.tags || '',
           }));
         }
         return p;
@@ -732,7 +1232,7 @@ export const useStore = create()(
       merge: (persisted, current) => ({
         ...current,
         ...persisted,
-        app: { ...current.app, ...(persisted?.app || {}), editingTxId: null },
+        app: { ...current.app, ...(persisted?.app || {}), editingTxId: null, searchOpen: false, searchQuery: '', settingsOpen: false },
         personal: {
           ...current.personal,
           ...(persisted?.personal || {}),
@@ -746,7 +1246,7 @@ export const useStore = create()(
 );
 
 // ════════════════════════════════════════════════════════════════════
-// EVENT-SOURCED COMPUTATIONS
+// COMPUTATIONS
 // ════════════════════════════════════════════════════════════════════
 export function computeDebtRepaid(debtEvents, debtId) {
   return debtEvents
@@ -760,10 +1260,6 @@ export function computeVentureDeployed(ventureEvents, ventureId) {
     .reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
 }
 
-/**
- * Compute current bucket balances by summing all transactions' bucket allocations.
- * Returns { warChest: 1234.56, operations: 567.89, ... } in base currency.
- */
 export function computeBucketBalances(transactions, base, rates) {
   const balances = {};
   for (const tx of transactions) {
@@ -777,15 +1273,11 @@ export function computeBucketBalances(transactions, base, rates) {
   return balances;
 }
 
-/**
- * Compute month-to-date inflow and outflow per bucket.
- */
 export function computeBucketMTD(transactions, base, rates) {
   const monthStart = new Date();
   monthStart.setDate(1);
   monthStart.setHours(0, 0, 0, 0);
-
-  const mtd = {}; // { bucketKey: { inflow, outflow } }
+  const mtd = {};
   for (const tx of transactions) {
     if (new Date(tx.date) < monthStart) continue;
     const txCurrency = tx.currency || 'USD';
@@ -800,19 +1292,12 @@ export function computeBucketMTD(transactions, base, rates) {
   return mtd;
 }
 
-/**
- * Compute filling state for a bucket's goals based on current bucket balance.
- * Sequential goals fill in priority order. Parallel goals split remaining balance proportionally.
- */
 export function computeGoalsForBucket(goals, bucketKey, bucketBalance, base, rates) {
   const active = goals
     .filter((g) => g.bucketKey === bucketKey && g.status === 'active')
     .sort((a, b) => a.priority - b.priority);
-
   let remaining = Math.max(0, bucketBalance);
   const result = [];
-
-  // Phase 1: fill sequential (non-parallel) goals first, in priority order
   for (const g of active) {
     if (g.parallel) continue;
     const targetBase = convert(g.target, g.currency, base, rates);
@@ -826,8 +1311,6 @@ export function computeGoalsForBucket(goals, bucketKey, bucketBalance, base, rat
       ready: filled >= targetBase,
     });
   }
-
-  // Phase 2: parallel goals share whatever's left, proportional to their targets
   const parallelGoals = active.filter((g) => g.parallel);
   const parallelTotalTarget = parallelGoals.reduce((s, g) => s + convert(g.target, g.currency, base, rates), 0);
   for (const g of parallelGoals) {
@@ -842,8 +1325,43 @@ export function computeGoalsForBucket(goals, bucketKey, bucketBalance, base, rat
       ready: filled >= targetBase,
     });
   }
-
   return result.sort((a, b) => a.priority - b.priority);
+}
+
+// Tag autocomplete — gather all tags ever used
+export function gatherTags(transactions) {
+  const tagSet = new Set();
+  for (const t of transactions) {
+    const tagStr = t.tags || '';
+    if (typeof tagStr !== 'string') continue;
+    for (const tag of tagStr.split(',')) {
+      const trimmed = tag.trim();
+      if (trimmed) tagSet.add(trimmed);
+    }
+  }
+  return Array.from(tagSet).sort();
+}
+
+// Search/filter
+export function searchTransactions(transactions, { query = '', type = null, category = null, tags = [], dateFrom = null, dateTo = null, minAmount = null, maxAmount = null }) {
+  const q = query.toLowerCase().trim();
+  return transactions.filter((t) => {
+    if (type && t.type !== type) return false;
+    if (category && t.category !== category) return false;
+    if (dateFrom && new Date(t.date) < new Date(dateFrom)) return false;
+    if (dateTo && new Date(t.date) > new Date(dateTo)) return false;
+    if (minAmount !== null && Math.abs(t.amount) < Number(minAmount)) return false;
+    if (maxAmount !== null && Math.abs(t.amount) > Number(maxAmount)) return false;
+    if (tags.length > 0) {
+      const txTags = (t.tags || '').split(',').map((s) => s.trim()).filter(Boolean);
+      if (!tags.every((tag) => txTags.includes(tag))) return false;
+    }
+    if (q) {
+      const haystack = [t.notes, t.category, t.tags, String(t.amount), t.currency].join(' ').toLowerCase();
+      if (!haystack.includes(q)) return false;
+    }
+    return true;
+  });
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -859,6 +1377,10 @@ export const selectVentures         = (s) => s.personal.ventures;
 export const selectVentureEvents    = (s) => s.personal.ventureEvents;
 export const selectBuckets          = (s) => s.personal.buckets;
 export const selectGoals            = (s) => s.personal.goals;
+export const selectRecurring        = (s) => s.personal.recurring;
+export const selectPending          = (s) => s.personal.pending;
+export const selectTemplates        = (s) => s.personal.templates;
+export const selectCategories       = (s) => s.personal.categories;
 export const selectActiveTab        = (s) => s.app.activeTab;
 export const selectBaseCurrency     = (s) => s.app.baseCurrency;
 export const selectRates            = (s) => s.app.rates;
@@ -868,7 +1390,9 @@ export const selectIsSyncing        = (s) => s.personal.syncing;
 export const selectIsOnline         = (s) => s.app.online;
 export const selectEditingTxId      = (s) => s.app.editingTxId;
 export const selectLastDeleted      = (s) => s.personal.lastDeleted;
-
+export const selectSearchQuery      = (s) => s.app.searchQuery;
+export const selectSearchOpen       = (s) => s.app.searchOpen;
+export const selectSettingsOpen     = (s) => s.app.settingsOpen;
 export const selectTotalDebtInBase = (state) => {
   const base = state.app.baseCurrency;
   const rates = state.app.rates;
@@ -930,6 +1454,7 @@ export function computeDebtsWithStatus(debts, debtEvents, base, rates) {
 
 if (typeof window !== 'undefined') {
   const triggerSync = () => useStore.getState().syncQueue();
+  const triggerTick = () => useStore.getState().tickRecurringSchedules();
   window.addEventListener('online', () => {
     useStore.setState((s) => ({ app: { ...s.app, online: true } }));
     triggerSync();
@@ -937,6 +1462,11 @@ if (typeof window !== 'undefined') {
   window.addEventListener('offline', () => {
     useStore.setState((s) => ({ app: { ...s.app, online: false } }));
   });
-  useStore.getState().hydrate();
+  // Hydrate, then tick once everything is loaded
+  useStore.getState().hydrate().then(() => {
+    setTimeout(triggerTick, 1000);
+  });
+  // Sync every 20s, tick every 60s
   setInterval(triggerSync, 20_000);
+  setInterval(triggerTick, 60_000);
 }
