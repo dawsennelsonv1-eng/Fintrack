@@ -1,115 +1,89 @@
-// src/components/settings/DataExport.jsx
+// src/components/settings/DangerZone.jsx
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Download, FileJson, FileSpreadsheet, Check } from 'lucide-react';
-import { useStore } from '../../store/useStore';
+import { AlertTriangle, RefreshCw, Loader2 } from 'lucide-react';
+import { useStore, selectQueueSize } from '../../store/useStore';
 
-export default function DataExport() {
-  const exportAllData = useStore((s) => s.exportAllData);
-  const transactions = useStore((s) => s.personal.transactions);
-  const [flashed, setFlashed] = useState(null);
+export default function DangerZone({ onDone }) {
+  const resetLocalData = useStore((s) => s.resetLocalData);
+  const clearQueue = useStore((s) => s.clearQueue);
+  const queueSize = useStore(selectQueueSize);
+  const [confirming, setConfirming] = useState(false);
+  const [working, setWorking] = useState(false);
 
-  const flash = (which) => {
-    setFlashed(which);
-    setTimeout(() => setFlashed(null), 1600);
-  };
-
-  const downloadFile = (filename, content, mime) => {
+  const handleReset = async () => {
+    setWorking(true);
     try {
-      const blob = new Blob([content], { type: mime });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      return true;
-    } catch (e) {
-      return false;
-    }
-  };
-
-  const exportJSON = () => {
-    const data = exportAllData();
-    const ts = new Date().toISOString().slice(0, 10);
-    if (downloadFile(`fintrack-backup-${ts}.json`, JSON.stringify(data, null, 2), 'application/json')) {
-      flash('json');
-    }
-  };
-
-  const exportCSV = () => {
-    if (transactions.length === 0) return;
-    const headers = ['date', 'type', 'amount', 'currency', 'category', 'notes', 'tags'];
-    const escape = (v) => {
-      const s = String(v ?? '');
-      if (s.includes(',') || s.includes('"') || s.includes('\n')) {
-        return '"' + s.replace(/"/g, '""') + '"';
-      }
-      return s;
-    };
-    const rows = [
-      headers.join(','),
-      ...transactions.map((t) =>
-        headers.map((h) => escape(t[h] ?? '')).join(',')
-      ),
-    ];
-    const ts = new Date().toISOString().slice(0, 10);
-    if (downloadFile(`fintrack-transactions-${ts}.csv`, rows.join('\n'), 'text/csv')) {
-      flash('csv');
+      await resetLocalData();
+      onDone?.();
+    } finally {
+      setWorking(false);
+      setConfirming(false);
     }
   };
 
   return (
     <div className="space-y-4">
-      <p className="text-[12px] text-muted leading-relaxed">
-        Download a copy of your data. Your sheet is the canonical source — these exports are for backup or analysis in another tool.
-      </p>
-
-      <div className="space-y-2">
-        <ExportCard
-          icon={FileJson}
-          title="Full backup (JSON)"
-          desc="All transactions, buckets, goals, debts, investments, recurring schedules, templates, categories, and settings."
-          onClick={exportJSON}
-          flashed={flashed === 'json'}
-        />
-        <ExportCard
-          icon={FileSpreadsheet}
-          title="Transactions only (CSV)"
-          desc={`${transactions.length} transactions · open in Excel, Numbers, or Google Sheets`}
-          onClick={exportCSV}
-          flashed={flashed === 'csv'}
-          disabled={transactions.length === 0}
-        />
+      <div className="rounded-xl border border-accent-expense/30 bg-accent-expense/5 p-4">
+        <div className="flex items-start gap-3">
+          <AlertTriangle size={18} className="text-accent-expense shrink-0 mt-0.5" />
+          <div>
+            <h3 className="text-sm font-medium text-accent-expense mb-1">Clear local data</h3>
+            <p className="text-[12px] text-muted leading-relaxed">
+              This wipes everything stored on this device and re-fetches from your sheet. Your sheet data is not touched.
+              Use this only if the app is misbehaving (stuck queue, weird state, ghost transactions).
+            </p>
+          </div>
+        </div>
       </div>
 
-      <p className="text-[11px] text-muted text-center pt-2">
-        Files save to your device's Downloads folder.
-      </p>
+      {queueSize > 0 && (
+        <div className="rounded-xl border border-[var(--border)] p-4">
+          <div className="text-sm font-medium mb-1">⚠ Pending sync queue</div>
+          <p className="text-[12px] text-muted mb-3">
+            You have {queueSize} unsynced operation{queueSize === 1 ? '' : 's'}. Clearing data will discard {queueSize === 1 ? 'it' : 'them'} permanently.
+          </p>
+          <button
+            onClick={() => { clearQueue(); }}
+            className="text-[12px] underline underline-offset-2 hover:no-underline"
+          >
+            Clear queue first ({queueSize})
+          </button>
+        </div>
+      )}
+
+      {!confirming ? (
+        <button
+          onClick={() => setConfirming(true)}
+          className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-accent-expense/10 text-accent-expense text-sm font-medium hover:bg-accent-expense/20 transition-colors"
+        >
+          <RefreshCw size={14} />
+          Clear local data & re-sync
+        </button>
+      ) : (
+        <motion.div
+          initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
+          className="space-y-2"
+        >
+          <p className="text-[12px] text-center text-muted">
+            Sure? You'll see a brief loading state while the app re-fetches from the sheet.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => setConfirming(false)} disabled={working}
+              className="py-3 rounded-xl bg-[var(--bg)] text-sm font-medium disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleReset} disabled={working}
+              className="py-3 rounded-xl bg-accent-expense text-white text-sm font-medium flex items-center justify-center gap-2"
+            >
+              {working ? (<><Loader2 size={14} className="animate-spin" /> Clearing…</>) : 'Yes, clear'}
+            </button>
+          </div>
+        </motion.div>
+      )}
     </div>
-  );
-}
-
-function ExportCard({ icon: Icon, title, desc, onClick, flashed, disabled }) {
-  return (
-    <motion.button
-      whileTap={{ scale: 0.99 }}
-      onClick={onClick}
-      disabled={disabled}
-      className="w-full text-left surface border rounded-xl p-4 hover:bg-[var(--bg)] transition-colors disabled:opacity-40 disabled:hover:bg-[var(--surface)]"
-    >
-      <div className="flex items-start gap-3">
-        <div className="w-10 h-10 rounded-lg bg-[var(--bg)] flex items-center justify-center shrink-0">
-          {flashed ? <Check size={17} className="text-accent-income" /> : <Icon size={17} strokeWidth={1.75} />}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium">{flashed ? 'Downloaded' : title}</div>
-          <div className="text-[11px] text-muted mt-0.5 leading-relaxed">{desc}</div>
-        </div>
-        <Download size={15} className="text-muted shrink-0 mt-1" />
-      </div>
-    </motion.button>
   );
 }
