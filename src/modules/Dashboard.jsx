@@ -16,6 +16,7 @@ import { convert, formatMoney, formatCompact } from '../lib/currency';
 import { fadeUp, ease, relativeTime } from '../lib/util';
 import SyncBadge from '../components/SyncBadge';
 import { useTxActions } from '../components/TxActions';
+import PendingInbox from '../components/PendingInbox';
 
 export default function Dashboard() {
   const transactions = useStore(selectTransactions);
@@ -43,6 +44,7 @@ export default function Dashboard() {
 
   return (
     <main className="max-w-2xl mx-auto px-5 pt-4 pb-32">
+      <PendingInbox />
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease }} className="mb-5">
         <div className="flex items-center justify-between mb-1.5">
           <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">Net Worth</div>
