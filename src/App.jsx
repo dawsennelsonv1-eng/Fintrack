@@ -8,7 +8,10 @@ import DebtPill from './components/DebtPill';
 import QuickAdd from './components/QuickAdd';
 import { UndoToast } from './components/TxActions';
 import InstallPrompt from './components/InstallPrompt';
+import SearchOverlay from './components/SearchOverlay';
+import Settings from './components/Settings';
 
+// Lazy-load modules so the initial bundle stays slim
 const Dashboard   = lazy(() => import('./modules/Dashboard'));
 const Budgets     = lazy(() => import('./modules/Budgets'));
 const Investments = lazy(() => import('./modules/Investments'));
@@ -43,6 +46,7 @@ export default function App() {
     <div className="min-h-screen font-sans">
       <Header />
 
+      {/* Persistent debt indicator — sits below header */}
       <div className="max-w-2xl mx-auto px-5 pt-3">
         <DebtPill />
       </div>
@@ -57,6 +61,10 @@ export default function App() {
 
       <QuickAdd />
       <BottomNav />
+
+      {/* Overlays */}
+      <SearchOverlay />
+      <Settings />
       <UndoToast />
       <InstallPrompt />
     </div>
