@@ -1,9 +1,10 @@
 // src/components/Header.jsx
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, Sun, Moon, Check, Lock } from 'lucide-react';
+import { ChevronDown, Sun, Moon, Check, Lock, Search, Repeat, Settings as SettingsIcon } from 'lucide-react';
 import { useStore, selectTheme, selectBaseCurrency } from '../store/useStore';
 import { CURRENCIES } from '../lib/currency';
+import SchedulesManager from './SchedulesManager';
 
 const WORKSPACES = [
   { id: 'personal', label: 'Personal',         sublabel: 'Finance',          enabled: true },
@@ -12,6 +13,7 @@ const WORKSPACES = [
 
 export default function Header() {
   const [wOpen, setWOpen] = useState(false);
+  const [schedulesOpen, setSchedulesOpen] = useState(false);
   const wRef = useRef(null);
   const workspace = useStore((s) => s.app.workspace);
   const setWorkspace = useStore((s) => s.setWorkspace);
@@ -19,6 +21,8 @@ export default function Header() {
   const toggleTheme = useStore((s) => s.toggleTheme);
   const baseCurrency = useStore(selectBaseCurrency);
   const setBaseCurrency = useStore((s) => s.setBaseCurrency);
+  const setSearchOpen = useStore((s) => s.setSearchOpen);
+  const setSettingsOpen = useStore((s) => s.setSettingsOpen);
 
   const active = WORKSPACES.find((w) => w.id === workspace) || WORKSPACES[0];
 
@@ -91,16 +95,36 @@ export default function Header() {
           </AnimatePresence>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => setSearchOpen(true)}
+            className="w-9 h-9 rounded-full surface border flex items-center justify-center hover:scale-105 active:scale-95 transition-transform"
+            aria-label="Search"
+          >
+            <Search size={15} />
+          </button>
+          <button
+            onClick={() => setSchedulesOpen(true)}
+            className="w-9 h-9 rounded-full surface border flex items-center justify-center hover:scale-105 active:scale-95 transition-transform"
+            aria-label="Schedules"
+          >
+            <Repeat size={15} />
+          </button>
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="w-9 h-9 rounded-full surface border flex items-center justify-center hover:scale-105 active:scale-95 transition-transform"
+            aria-label="Settings"
+          >
+            <SettingsIcon size={15} />
+          </button>
           <button
             onClick={cycleBase}
             className="px-3 py-1.5 rounded-full surface border text-xs font-medium hover:scale-105 active:scale-95 transition-transform"
             title="Cycle base currency"
           >
-            {baseCurrency === 'HTG' ? <>{baseCurrency}</> : <>
-              <span className="font-display mr-1">{CURRENCIES[baseCurrency].symbol}</span>
-              {baseCurrency}
-            </>}
+            {baseCurrency === 'HTG'
+              ? baseCurrency
+              : <><span className="font-display mr-1">{CURRENCIES[baseCurrency].symbol}</span>{baseCurrency}</>}
           </button>
           <button
             onClick={toggleTheme}
@@ -111,6 +135,7 @@ export default function Header() {
           </button>
         </div>
       </div>
+      <SchedulesManager open={schedulesOpen} onClose={() => setSchedulesOpen(false)} />
     </header>
   );
 }
