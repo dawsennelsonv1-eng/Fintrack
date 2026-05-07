@@ -6,8 +6,8 @@ import { useStore, selectActiveTab, selectTotalDebtInBase } from '../store/useSt
 const TABS = [
   { id: 'dashboard',   label: 'Home',     icon: LayoutGrid },
   { id: 'budgets',     label: 'Budgets',  icon: Target },
-  { id: 'investments', label: 'Wealth',   icon: TrendingUp },
   { id: 'calendar',    label: 'Calendar', icon: Calendar },
+  { id: 'investments', label: 'Wealth',   icon: TrendingUp },
   { id: 'debt',        label: 'Debt',     icon: AlertCircle, alert: true },
 ];
 
