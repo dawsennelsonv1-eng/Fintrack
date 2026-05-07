@@ -1152,12 +1152,16 @@ const personalSlice = (set, get) => ({
         collectIds(data.recurring); collectIds(data.pending);
         collectIds(data.templates); collectIds(data.categories);
 
-        // For ops we tried to send: if their id is now in the sheet, the
-        // create succeeded server-side even though the response was lost.
-        // Drop those from the queue.
+        // After verify: decide which ops to drop based on what's in the sheet.
+        //   - create: drop if id now exists in sheet (succeeded server-side)
+        //   - update: drop if id exists in sheet (server applied or will accept retry as no-op;
+        //             if id is missing, keep so we can retry as create later)
+        //   - delete: drop if id is NOT in sheet (succeeded) OR if it IS still there
+        //             (server is idempotent — drop and let user re-delete if needed)
         const stillPending = queue.filter((op) => {
           if (op.action === 'create') return !seenIds.has(op.id);
-          // Updates/deletes: keep them, they're cheap to retry and idempotent
+          if (op.action === 'update') return !seenIds.has(op.id);
+          if (op.action === 'delete') return false; // always drop deletes after verify
           return true;
         });
         // Plus any new ops added during sync
@@ -1169,7 +1173,7 @@ const personalSlice = (set, get) => ({
             ...s.personal,
             queue: [...stillPending, ...newDuringSync],
             syncing: false,
-            syncError: stillPending.length > 0 ? `${stillPending.length} pending — will retry` : null,
+            syncError: stillPending.length > 0 ? `${stillPending.length} need retry` : null,
           },
           app: { ...s.app, online: true },
         }));
