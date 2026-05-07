@@ -268,6 +268,7 @@ const personalSlice = (set, get) => ({
     lastTickAt: null,
     syncing: false,
     syncError: null,
+    syncLog: [], // Last ~20 sync attempts for debugging
     lastDeleted: null,
   },
 
@@ -1110,23 +1111,35 @@ const personalSlice = (set, get) => ({
     const queue = get().personal.queue;
     if (queue.length === 0) return;
 
-    // Snapshot the queue ids we're about to send. We'll use this to
-    // compute the diff of "what was in queue when we started" vs
-    // "what's in queue now (after possible new additions)" so we don't
-    // accidentally drop ops added during sync.
+    const startedAt = new Date();
     const sendingIds = new Set(queue.map((op) => `${op.entity || 'transaction'}:${op.id}`));
+    const queueSnapshot = queue.map((op) => ({
+      id: op.id, entity: op.entity, action: op.action,
+      summary: op.name || op.category || op.creditor || ''
+    }));
 
     set((s) => ({ personal: { ...s.personal, syncing: true, syncError: null } }));
     try {
       const { results = [] } = await api.bulk(queue);
 
-      // Identify ops that the server explicitly rejected (status >= 400).
+      // Build log entries for each op showing what the server returned
+      const logEntries = queueSnapshot.map((q, i) => {
+        const r = results[i];
+        return {
+          time: startedAt.toLocaleTimeString(),
+          op: `${q.action} ${q.entity}`,
+          summary: q.summary,
+          id: q.id,
+          status: r?.status ?? '?',
+          message: r?.message || r?.error || (r ? 'no message' : 'NO RESULT'),
+        };
+      });
+
       const failedOps = queue.filter((_, i) => results[i]?.status >= 400);
 
       set((s) => ({
         personal: {
           ...s.personal,
-          // Keep failed ops + any ops added DURING sync (those weren't sent)
           queue: [
             ...failedOps,
             ...s.personal.queue.filter((op) => !sendingIds.has(`${op.entity || 'transaction'}:${op.id}`)),
@@ -1134,14 +1147,12 @@ const personalSlice = (set, get) => ({
           transactions: s.personal.transactions.map((t) => ({ ...t, _pending: false })),
           lastSyncAt: nowISO(),
           syncing: false,
+          syncLog: [...logEntries, ...s.personal.syncLog].slice(0, 30),
         },
         app: { ...s.app, online: true },
       }));
     } catch (err) {
-      // Network or parse error. The server MAY have processed the request
-      // anyway (common on mobile networks where response gets dropped).
-      // Re-hydrate to find out what actually landed in the sheet, then
-      // remove successfully-synced ops from our queue.
+      // Network/parse error path. Try verify-from-sheet.
       try {
         const data = await api.fetchAll();
         const seenIds = new Set();
@@ -1152,19 +1163,22 @@ const personalSlice = (set, get) => ({
         collectIds(data.recurring); collectIds(data.pending);
         collectIds(data.templates); collectIds(data.categories);
 
-        // After verify: decide which ops to drop based on what's in the sheet.
-        //   - create: drop if id now exists in sheet (succeeded server-side)
-        //   - update: drop if id exists in sheet (server applied or will accept retry as no-op;
-        //             if id is missing, keep so we can retry as create later)
-        //   - delete: drop if id is NOT in sheet (succeeded) OR if it IS still there
-        //             (server is idempotent — drop and let user re-delete if needed)
         const stillPending = queue.filter((op) => {
           if (op.action === 'create') return !seenIds.has(op.id);
           if (op.action === 'update') return !seenIds.has(op.id);
-          if (op.action === 'delete') return false; // always drop deletes after verify
+          if (op.action === 'delete') return false;
           return true;
         });
-        // Plus any new ops added during sync
+
+        const logEntries = queueSnapshot.map((q) => ({
+          time: startedAt.toLocaleTimeString(),
+          op: `${q.action} ${q.entity}`,
+          summary: q.summary,
+          id: q.id,
+          status: 'NET-ERR',
+          message: seenIds.has(q.id) ? 'verified in sheet → drop' : 'not in sheet → retry',
+        }));
+
         const queueNow = get().personal.queue;
         const newDuringSync = queueNow.filter((op) => !sendingIds.has(`${op.entity || 'transaction'}:${op.id}`));
 
@@ -1174,13 +1188,24 @@ const personalSlice = (set, get) => ({
             queue: [...stillPending, ...newDuringSync],
             syncing: false,
             syncError: stillPending.length > 0 ? `${stillPending.length} need retry` : null,
+            syncLog: [...logEntries, ...s.personal.syncLog].slice(0, 30),
           },
           app: { ...s.app, online: true },
         }));
       } catch (verifyErr) {
-        // Couldn't even verify. Mark offline-ish, keep queue intact.
+        const logEntries = queueSnapshot.map((q) => ({
+          time: startedAt.toLocaleTimeString(),
+          op: `${q.action} ${q.entity}`,
+          summary: q.summary,
+          id: q.id,
+          status: 'TOTAL-FAIL',
+          message: err.message + ' / verify: ' + verifyErr.message,
+        }));
         set((s) => ({
-          personal: { ...s.personal, syncing: false, syncError: err.message },
+          personal: {
+            ...s.personal, syncing: false, syncError: err.message,
+            syncLog: [...logEntries, ...s.personal.syncLog].slice(0, 30),
+          },
           app: { ...s.app, online: !(err instanceof ApiError && err.status === 0) },
         }));
       }
@@ -1188,6 +1213,7 @@ const personalSlice = (set, get) => ({
   },
 
   clearQueue: () => set((s) => ({ personal: { ...s.personal, queue: [], syncError: null } })),
+  clearSyncLog: () => set((s) => ({ personal: { ...s.personal, syncLog: [] } })),
 });
 
 const businessSlice = () => ({
@@ -1441,6 +1467,7 @@ export const selectBaseCurrency     = (s) => s.app.baseCurrency;
 export const selectRates            = (s) => s.app.rates;
 export const selectTheme            = (s) => s.app.theme;
 export const selectQueueSize        = (s) => s.personal.queue.length;
+export const selectSyncLog          = (s) => s.personal.syncLog;
 export const selectIsSyncing        = (s) => s.personal.syncing;
 export const selectIsOnline         = (s) => s.app.online;
 export const selectEditingTxId      = (s) => s.app.editingTxId;
