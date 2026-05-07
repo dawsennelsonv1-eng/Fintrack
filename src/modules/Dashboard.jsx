@@ -1,5 +1,5 @@
 // src/modules/Dashboard.jsx
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -38,7 +38,6 @@ export default function Dashboard() {
   }, [transactions, invTotals.value, debt, baseCurrency, rates]);
 
   const series = useMemo(() => buildSeries(transactions, baseCurrency, rates, 30), [transactions, baseCurrency, rates]);
-  const recent = transactions.slice(0, 6);
 
   const { bind, sheet } = useTxActions();
 
@@ -127,24 +126,12 @@ export default function Dashboard() {
       </motion.section>
 
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.15 }}>
-        <div className="flex items-baseline justify-between mb-3 px-1">
-          <h2 className="font-display text-2xl">Recent</h2>
-          <span className="text-[11px] text-muted">{transactions.length} total</span>
-        </div>
-        {recent.length === 0 ? (
-          <div className="surface border rounded-2xl p-8 text-center">
-            <Wallet size={28} className="mx-auto text-muted mb-3" strokeWidth={1.5} />
-            <div className="font-display text-xl mb-1">Nothing yet</div>
-            <div className="text-sm text-muted">Tap the + button to log your first entry</div>
-          </div>
-        ) : (
-          <ul className="surface border rounded-2xl divide-y divide-[var(--border)] overflow-hidden">
-            {recent.map((t) => (
-              <Row key={t.id} tx={t} baseCurrency={baseCurrency} rates={rates} bind={bind} />
-            ))}
-          </ul>
-        )}
-        <p className="text-[11px] text-muted text-center mt-3">Long-press a transaction to edit or delete</p>
+        <TransactionHistory
+          transactions={transactions}
+          baseCurrency={baseCurrency}
+          rates={rates}
+          bind={bind}
+        />
       </motion.section>
 
       {sheet}
@@ -363,6 +350,79 @@ function StatCard({ label, value, tone, icon: Icon, currency, subtle }) {
       <div className={`font-display text-2xl num ${toneClass}`}>{formatCompact(value, currency)}</div>
       {subtle && <div className={`text-[11px] num mt-0.5 ${value >= 0 ? 'text-accent-income' : 'text-accent-expense'}`}>{subtle}</div>}
     </div>
+  );
+}
+
+function TransactionHistory({ transactions, baseCurrency, rates, bind }) {
+  const [showCount, setShowCount] = useState(8);
+  const total = transactions.length;
+  const visible = transactions.slice(0, showCount);
+  const hasMore = showCount < total;
+
+  // Group by date
+  const grouped = useMemo(() => {
+    const groups = {};
+    for (const t of visible) {
+      const d = new Date(t.date);
+      const key = d.toLocaleDateString('en', { weekday: 'short', month: 'short', day: 'numeric' });
+      if (!groups[key]) groups[key] = { transactions: [], date: d };
+      groups[key].transactions.push(t);
+    }
+    return Object.entries(groups);
+  }, [visible]);
+
+  return (
+    <>
+      <div className="flex items-baseline justify-between mb-3 px-1">
+        <h2 className="font-display text-2xl">History</h2>
+        <span className="text-[11px] text-muted">
+          {total === 0 ? 'No entries yet' : `${total} total`}
+        </span>
+      </div>
+
+      {total === 0 ? (
+        <div className="surface border rounded-2xl p-8 text-center">
+          <Wallet size={28} className="mx-auto text-muted mb-3" strokeWidth={1.5} />
+          <div className="font-display text-xl mb-1">Nothing yet</div>
+          <div className="text-sm text-muted">Tap the + button to log your first entry</div>
+        </div>
+      ) : (
+        <>
+          <div className="space-y-3">
+            {grouped.map(([dateLabel, group]) => (
+              <div key={dateLabel}>
+                <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1.5 px-1">
+                  {dateLabel}
+                </div>
+                <ul className="surface border rounded-2xl divide-y divide-[var(--border)] overflow-hidden">
+                  {group.transactions.map((t) => (
+                    <Row key={t.id} tx={t} baseCurrency={baseCurrency} rates={rates} bind={bind} />
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+
+          {hasMore && (
+            <button
+              onClick={() => setShowCount((c) => c + 20)}
+              className="w-full mt-3 py-3 rounded-xl bg-[var(--bg)] hover:bg-[var(--border)] transition-colors text-sm font-medium text-muted"
+            >
+              Load older ({total - showCount} more)
+            </button>
+          )}
+          {!hasMore && total > 8 && (
+            <button
+              onClick={() => setShowCount(8)}
+              className="w-full mt-3 py-2 text-[11px] text-muted hover:text-[var(--text)] transition-colors"
+            >
+              Collapse
+            </button>
+          )}
+          <p className="text-[11px] text-muted text-center mt-3">Long-press an entry to edit or delete</p>
+        </>
+      )}
+    </>
   );
 }
 

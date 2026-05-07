@@ -504,22 +504,12 @@ function GoalsSheet({ bucket, balance, onClose }) {
                 Claimed · {claimedGoals.length}
               </div>
               <div className="space-y-1.5">
-                {claimedGoals.slice(0, 5).map((g) => (
-                  <div key={g.id}
-                    className="flex items-center gap-3 px-3 py-2 rounded-lg bg-[var(--bg)] text-sm">
-                    <div className="w-7 h-7 rounded-lg bg-accent-income/10 text-accent-income flex items-center justify-center">
-                      <Check size={13} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-[13px] truncate">{g.name}</div>
-                      <div className="text-[10px] text-muted">
-                        {new Date(g.claimedAt).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' })}
-                      </div>
-                    </div>
-                    <div className="text-[11px] num text-muted">
-                      {formatMoney(g.claimedAmount, g.currency)}
-                    </div>
-                  </div>
+                {claimedGoals.slice(0, 8).map((g) => (
+                  <ClaimedGoalRow
+                    key={g.id}
+                    goal={g}
+                    onRemove={() => removeGoal(g.id)}
+                  />
                 ))}
               </div>
             </div>
@@ -820,5 +810,56 @@ function ClaimDialog({ goal, baseCurrency, rates, onCancel, onConfirm }) {
         </motion.div>
       </motion.div>
     </AnimatePresence>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// CLAIMED GOAL ROW — with delete confirmation
+// ════════════════════════════════════════════════════════════════════
+function ClaimedGoalRow({ goal, onRemove }) {
+  const [confirming, setConfirming] = useState(false);
+
+  return (
+    <motion.div layout className="flex items-center gap-3 px-3 py-2 rounded-lg bg-[var(--bg)] text-sm">
+      <div className="w-7 h-7 rounded-lg bg-accent-income/10 text-accent-income flex items-center justify-center shrink-0">
+        <Check size={13} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-[13px] truncate">{goal.name}</div>
+        <div className="text-[10px] text-muted">
+          {new Date(goal.claimedAt).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' })}
+        </div>
+      </div>
+
+      {!confirming ? (
+        <>
+          <div className="text-[11px] num text-muted">
+            {formatMoney(goal.claimedAmount, goal.currency)}
+          </div>
+          <button
+            onClick={() => setConfirming(true)}
+            className="w-7 h-7 rounded-lg hover:bg-accent-expense/10 hover:text-accent-expense flex items-center justify-center shrink-0 transition-colors"
+            aria-label="Delete claimed goal"
+          >
+            <Trash2 size={12} />
+          </button>
+        </>
+      ) : (
+        <div className="flex gap-1.5 shrink-0">
+          <button
+            onClick={() => setConfirming(false)}
+            className="px-2 py-1 rounded-md bg-[var(--surface)] text-[10px] font-medium"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onRemove}
+            className="px-2 py-1 rounded-md bg-accent-expense text-white text-[10px] font-medium"
+          >
+            Delete
+          </button>
+        </div>
+      )}
+    </motion.div>
   );
 }
