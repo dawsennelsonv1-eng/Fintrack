@@ -2,59 +2,48 @@
 const API_URL = import.meta.env.VITE_API_URL || '';
 
 class ApiError extends Error {
-  constructor(message, status = 0, detail) {
+  constructor(message, status = 0) {
     super(message);
     this.status = status;
-    this.detail = detail;
   }
 }
 
+/**
+ * Apps Script web apps respond to POST with a 302 redirect before the
+ * handler runs. The redirect strips the request body, so we MUST send
+ * the payload as form-encoded data (which survives the redirect via
+ * the URL-rewrite) and read it via `e.parameter.payload` server-side.
+ *
+ * Sending JSON with Content-Type: application/json or text/plain looks
+ * fine in the browser network tab but the server receives an empty body.
+ */
 async function request(method, body) {
   if (!API_URL) throw new ApiError('VITE_API_URL not configured');
 
-  let opts;
-  let url = API_URL;
+  const opts = {
+    method,
+    redirect: 'follow',
+  };
 
-  if (method === 'GET') {
-    opts = { method: 'GET', redirect: 'follow' };
-  } else {
-    // Apps Script web apps issue a 302 to script.googleusercontent.com.
-    // The browser strips POST bodies during redirects in some cases.
-    // Workaround: send JSON as a URL-encoded form parameter; Apps Script
-    // can read it from e.parameter.payload regardless of redirects.
-    const formData = new URLSearchParams();
-    formData.append('payload', JSON.stringify(body));
-    opts = {
-      method: 'POST',
-      redirect: 'follow',
-      body: formData,
-      // Do NOT set Content-Type — browser will set it correctly
-      // for URLSearchParams, and any custom header triggers preflight.
-    };
+  if (method === 'POST' && body) {
+    // Form-encode so the payload survives Apps Script's 302 redirect.
+    // Apps Script reads this on the server as e.parameter.payload.
+    opts.body = new URLSearchParams({ payload: JSON.stringify(body) });
+    // NOTE: do NOT set Content-Type manually — URLSearchParams sets the
+    // correct application/x-www-form-urlencoded;charset=UTF-8 header.
   }
 
   let res;
   try {
-    res = await fetch(url, opts);
+    res = await fetch(API_URL, opts);
   } catch (err) {
-    throw new ApiError('Network unreachable: ' + (err?.message || 'fetch failed'), 0);
+    throw new ApiError('Network unreachable', 0);
   }
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new ApiError(`HTTP ${res.status}`, res.status, text.slice(0, 200));
-  }
+  if (!res.ok) throw new ApiError(`HTTP ${res.status}`, res.status);
 
-  let data;
-  try {
-    data = await res.json();
-  } catch (err) {
-    throw new ApiError('Invalid response (not JSON)', 0);
-  }
-
-  if (data.status >= 400) {
-    throw new ApiError(data.error || 'API error', data.status, JSON.stringify(data).slice(0, 200));
-  }
+  const data = await res.json();
+  if (data.status >= 400) throw new ApiError(data.error || 'API error', data.status);
   return data;
 }
 
