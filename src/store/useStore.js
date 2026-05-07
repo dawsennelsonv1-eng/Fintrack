@@ -391,29 +391,70 @@ const personalSlice = (set, get) => ({
 
   deleteTransaction: (id) => {
     const tx = get().personal.transactions.find((t) => t.id === id);
+
+    // If this was a claimed-goal transaction (notes start with 🎯),
+    // un-claim the linked goal so the user can claim it again later.
+    let unclaimedGoal = null;
+    if (tx && tx.category === 'Goal' && typeof tx.notes === 'string' && tx.notes.startsWith('🎯')) {
+      const goalName = tx.notes.replace(/^🎯\s*/, '').trim();
+      const linkedGoal = get().personal.goals.find(
+        (g) => g.name === goalName && g.status === 'claimed'
+      );
+      if (linkedGoal) {
+        unclaimedGoal = {
+          ...linkedGoal,
+          status: 'active',
+          claimedAt: '',
+          claimedAmount: 0,
+          updatedAt: nowISO(),
+        };
+      }
+    }
+
     set((s) => ({
       personal: {
         ...s.personal,
         transactions: s.personal.transactions.filter((t) => t.id !== id),
-        lastDeleted: tx ? { tx, deletedAt: Date.now() } : s.personal.lastDeleted,
+        goals: unclaimedGoal
+          ? s.personal.goals.map((g) => (g.id === unclaimedGoal.id ? unclaimedGoal : g))
+          : s.personal.goals,
+        lastDeleted: tx ? { tx, unclaimedGoal, deletedAt: Date.now() } : s.personal.lastDeleted,
       },
     }));
     enqueue(set, get, 'transaction', 'delete', { id });
+    if (unclaimedGoal) enqueue(set, get, 'goal', 'update', unclaimedGoal);
   },
 
   undoDelete: () => {
     const last = get().personal.lastDeleted;
     if (!last) return null;
     const tx = { ...last.tx, _pending: true, updatedAt: nowISO() };
+
+    // If we un-claimed a goal during the original delete, re-claim it on undo.
+    let reclaimed = null;
+    if (last.unclaimedGoal) {
+      reclaimed = {
+        ...last.unclaimedGoal,
+        status: 'claimed',
+        claimedAt: tx.date || nowISO(),
+        claimedAmount: tx.amount,
+        updatedAt: nowISO(),
+      };
+    }
+
     set((s) => ({
       personal: {
         ...s.personal,
         transactions: [tx, ...s.personal.transactions]
           .sort((a, b) => new Date(b.date) - new Date(a.date)),
+        goals: reclaimed
+          ? s.personal.goals.map((g) => (g.id === reclaimed.id ? reclaimed : g))
+          : s.personal.goals,
         lastDeleted: null,
       },
     }));
     enqueue(set, get, 'transaction', 'create', stripMeta(tx));
+    if (reclaimed) enqueue(set, get, 'goal', 'update', reclaimed);
     return tx;
   },
 
