@@ -20,57 +20,6 @@ function enqueue(set, get, entity, action, payload) {
   Promise.resolve().then(() => get().syncQueue());
 }
 
-/**
- * Collapse multiple ops on the same entity id into a single op:
- *   - delete wins over everything (final state: gone)
- *   - create + update(s) → single create with the latest values
- *   - update + update    → single update with the latest values
- *
- * This prevents the cascade where create fails on the server and
- * subsequent updates 404 because the row doesn't exist.
- *
- * Order-preserving: ops for different ids stay in original order.
- */
-function collapseQueue(queue) {
-  const byKey = new Map(); // key = entity:id  →  collapsed op
-  const order = [];
-
-  for (const op of queue) {
-    if (!op || !op.id) continue;
-    const key = `${op.entity || 'transaction'}:${op.id}`;
-    const existing = byKey.get(key);
-
-    if (!existing) {
-      byKey.set(key, { ...op });
-      order.push(key);
-      continue;
-    }
-
-    if (op.action === 'delete') {
-      // Delete trumps anything pending. If the original was a create
-      // we never sent, we can drop the whole thing.
-      if (existing.action === 'create') {
-        byKey.delete(key);
-        const idx = order.indexOf(key);
-        if (idx >= 0) order.splice(idx, 1);
-      } else {
-        byKey.set(key, { ...existing, ...op, action: 'delete' });
-      }
-      continue;
-    }
-
-    if (existing.action === 'create') {
-      // Merge update into the create payload. Keep action='create'.
-      byKey.set(key, { ...existing, ...op, action: 'create' });
-    } else {
-      // existing is update — merge new fields, stay update
-      byKey.set(key, { ...existing, ...op, action: existing.action });
-    }
-  }
-
-  return order.map((k) => byKey.get(k)).filter(Boolean);
-}
-
 // ════════════════════════════════════════════════════════════════════
 // DEFAULT BUCKETS
 // ════════════════════════════════════════════════════════════════════
@@ -1158,44 +1107,79 @@ const personalSlice = (set, get) => ({
 
   syncQueue: async () => {
     if (get().personal.syncing) return;
-    const rawQueue = get().personal.queue;
-    if (rawQueue.length === 0) return;
+    const queue = get().personal.queue;
+    if (queue.length === 0) return;
 
-    // Collapse the queue: if create + update exist for same id, keep
-    // only one create with the latest field values. If update + delete
-    // exist for same id, keep only the delete. This avoids the
-    // "create failed → updates 404" cascade.
-    const collapsed = collapseQueue(rawQueue);
+    // Snapshot the queue ids we're about to send. We'll use this to
+    // compute the diff of "what was in queue when we started" vs
+    // "what's in queue now (after possible new additions)" so we don't
+    // accidentally drop ops added during sync.
+    const sendingIds = new Set(queue.map((op) => `${op.entity || 'transaction'}:${op.id}`));
 
     set((s) => ({ personal: { ...s.personal, syncing: true, syncError: null } }));
     try {
-      const { results = [] } = await api.bulk(collapsed);
-      // Map results back to original queue items: anything in the original
-      // queue whose id matches a successful collapsed result is removed.
-      const successfulIds = new Set();
-      collapsed.forEach((op, i) => {
-        const r = results[i];
-        if (r && r.status < 400) successfulIds.add(op.id);
-      });
-      const failedOps = rawQueue.filter((op) => !successfulIds.has(op.id));
-      const lastError = results.find((r) => r && r.status >= 400);
+      const { results = [] } = await api.bulk(queue);
+
+      // Identify ops that the server explicitly rejected (status >= 400).
+      const failedOps = queue.filter((_, i) => results[i]?.status >= 400);
 
       set((s) => ({
         personal: {
           ...s.personal,
-          queue: failedOps,
+          // Keep failed ops + any ops added DURING sync (those weren't sent)
+          queue: [
+            ...failedOps,
+            ...s.personal.queue.filter((op) => !sendingIds.has(`${op.entity || 'transaction'}:${op.id}`)),
+          ],
           transactions: s.personal.transactions.map((t) => ({ ...t, _pending: false })),
           lastSyncAt: nowISO(),
           syncing: false,
-          syncError: failedOps.length > 0 && lastError ? `${failedOps.length} failed: ${lastError.error}` : null,
         },
         app: { ...s.app, online: true },
       }));
     } catch (err) {
-      set((s) => ({
-        personal: { ...s.personal, syncing: false, syncError: err.message },
-        app: { ...s.app, online: !(err instanceof ApiError && err.status === 0) },
-      }));
+      // Network or parse error. The server MAY have processed the request
+      // anyway (common on mobile networks where response gets dropped).
+      // Re-hydrate to find out what actually landed in the sheet, then
+      // remove successfully-synced ops from our queue.
+      try {
+        const data = await api.fetchAll();
+        const seenIds = new Set();
+        const collectIds = (arr) => { if (Array.isArray(arr)) for (const o of arr) if (o && o.id) seenIds.add(o.id); };
+        collectIds(data.transactions); collectIds(data.budgets);
+        collectIds(data.debts); collectIds(data.investments); collectIds(data.ventures);
+        collectIds(data.buckets); collectIds(data.goals);
+        collectIds(data.recurring); collectIds(data.pending);
+        collectIds(data.templates); collectIds(data.categories);
+
+        // For ops we tried to send: if their id is now in the sheet, the
+        // create succeeded server-side even though the response was lost.
+        // Drop those from the queue.
+        const stillPending = queue.filter((op) => {
+          if (op.action === 'create') return !seenIds.has(op.id);
+          // Updates/deletes: keep them, they're cheap to retry and idempotent
+          return true;
+        });
+        // Plus any new ops added during sync
+        const queueNow = get().personal.queue;
+        const newDuringSync = queueNow.filter((op) => !sendingIds.has(`${op.entity || 'transaction'}:${op.id}`));
+
+        set((s) => ({
+          personal: {
+            ...s.personal,
+            queue: [...stillPending, ...newDuringSync],
+            syncing: false,
+            syncError: stillPending.length > 0 ? `${stillPending.length} pending — will retry` : null,
+          },
+          app: { ...s.app, online: true },
+        }));
+      } catch (verifyErr) {
+        // Couldn't even verify. Mark offline-ish, keep queue intact.
+        set((s) => ({
+          personal: { ...s.personal, syncing: false, syncError: err.message },
+          app: { ...s.app, online: !(err instanceof ApiError && err.status === 0) },
+        }));
+      }
     }
   },
 
