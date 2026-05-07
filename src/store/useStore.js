@@ -20,6 +20,57 @@ function enqueue(set, get, entity, action, payload) {
   Promise.resolve().then(() => get().syncQueue());
 }
 
+/**
+ * Collapse multiple ops on the same entity id into a single op:
+ *   - delete wins over everything (final state: gone)
+ *   - create + update(s) → single create with the latest values
+ *   - update + update    → single update with the latest values
+ *
+ * This prevents the cascade where create fails on the server and
+ * subsequent updates 404 because the row doesn't exist.
+ *
+ * Order-preserving: ops for different ids stay in original order.
+ */
+function collapseQueue(queue) {
+  const byKey = new Map(); // key = entity:id  →  collapsed op
+  const order = [];
+
+  for (const op of queue) {
+    if (!op || !op.id) continue;
+    const key = `${op.entity || 'transaction'}:${op.id}`;
+    const existing = byKey.get(key);
+
+    if (!existing) {
+      byKey.set(key, { ...op });
+      order.push(key);
+      continue;
+    }
+
+    if (op.action === 'delete') {
+      // Delete trumps anything pending. If the original was a create
+      // we never sent, we can drop the whole thing.
+      if (existing.action === 'create') {
+        byKey.delete(key);
+        const idx = order.indexOf(key);
+        if (idx >= 0) order.splice(idx, 1);
+      } else {
+        byKey.set(key, { ...existing, ...op, action: 'delete' });
+      }
+      continue;
+    }
+
+    if (existing.action === 'create') {
+      // Merge update into the create payload. Keep action='create'.
+      byKey.set(key, { ...existing, ...op, action: 'create' });
+    } else {
+      // existing is update — merge new fields, stay update
+      byKey.set(key, { ...existing, ...op, action: existing.action });
+    }
+  }
+
+  return order.map((k) => byKey.get(k)).filter(Boolean);
+}
+
 // ════════════════════════════════════════════════════════════════════
 // DEFAULT BUCKETS
 // ════════════════════════════════════════════════════════════════════
@@ -1107,13 +1158,28 @@ const personalSlice = (set, get) => ({
 
   syncQueue: async () => {
     if (get().personal.syncing) return;
-    const queue = get().personal.queue;
-    if (queue.length === 0) return;
+    const rawQueue = get().personal.queue;
+    if (rawQueue.length === 0) return;
+
+    // Collapse the queue: if create + update exist for same id, keep
+    // only one create with the latest field values. If update + delete
+    // exist for same id, keep only the delete. This avoids the
+    // "create failed → updates 404" cascade.
+    const collapsed = collapseQueue(rawQueue);
 
     set((s) => ({ personal: { ...s.personal, syncing: true, syncError: null } }));
     try {
-      const { results = [] } = await api.bulk(queue);
-      const failedOps = queue.filter((_, i) => results[i]?.status >= 400);
+      const { results = [] } = await api.bulk(collapsed);
+      // Map results back to original queue items: anything in the original
+      // queue whose id matches a successful collapsed result is removed.
+      const successfulIds = new Set();
+      collapsed.forEach((op, i) => {
+        const r = results[i];
+        if (r && r.status < 400) successfulIds.add(op.id);
+      });
+      const failedOps = rawQueue.filter((op) => !successfulIds.has(op.id));
+      const lastError = results.find((r) => r && r.status >= 400);
+
       set((s) => ({
         personal: {
           ...s.personal,
@@ -1121,6 +1187,7 @@ const personalSlice = (set, get) => ({
           transactions: s.personal.transactions.map((t) => ({ ...t, _pending: false })),
           lastSyncAt: nowISO(),
           syncing: false,
+          syncError: failedOps.length > 0 && lastError ? `${failedOps.length} failed: ${lastError.error}` : null,
         },
         app: { ...s.app, online: true },
       }));
