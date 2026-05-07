@@ -1,22 +1,25 @@
 // src/components/SyncBadge.jsx
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Cloud, CloudOff, RefreshCw, AlertTriangle, ChevronUp } from 'lucide-react';
+import { Cloud, CloudOff, RefreshCw, AlertTriangle, ChevronUp, Bug } from 'lucide-react';
 import {
-  useStore, selectQueueSize, selectIsSyncing, selectIsOnline,
+  useStore, selectQueueSize, selectIsSyncing, selectIsOnline, selectSyncLog,
 } from '../store/useStore';
 
 export default function SyncBadge() {
   const [open, setOpen] = useState(false);
+  const [showLog, setShowLog] = useState(false);
   const queueSize = useStore(selectQueueSize);
   const syncing = useStore(selectIsSyncing);
   const online = useStore(selectIsOnline);
   const syncError = useStore((s) => s.personal.syncError);
   const queue = useStore((s) => s.personal.queue);
   const lastSyncAt = useStore((s) => s.personal.lastSyncAt);
+  const syncLog = useStore(selectSyncLog);
   const triggerSync = useStore((s) => s.syncQueue);
   const triggerHydrate = useStore((s) => s.hydrate);
   const clearQueue = useStore((s) => s.clearQueue);
+  const clearSyncLog = useStore((s) => s.clearSyncLog);
 
   let state = 'synced';
   if (!online) state = 'offline';
@@ -133,6 +136,40 @@ export default function SyncBadge() {
                 >
                   Clear stuck queue
                 </button>
+              )}
+
+              {/* DEBUG LOG — surfaces what each sync attempt returned */}
+              <button
+                onClick={() => setShowLog(!showLog)}
+                className="w-full mt-2 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg bg-[var(--bg)] hover:bg-[var(--border)] transition-colors text-[10px] text-muted"
+              >
+                <Bug size={11} />
+                {showLog ? 'Hide' : 'Show'} sync log ({syncLog.length})
+              </button>
+
+              {showLog && syncLog.length > 0 && (
+                <div className="mt-2 space-y-1.5 max-h-72 overflow-y-auto no-scrollbar">
+                  {syncLog.map((entry, i) => {
+                    const ok = entry.status === 200 || entry.status === 201;
+                    const tone = ok ? 'text-accent-income' : entry.status === 404 ? 'text-amber-600 dark:text-amber-400' : 'text-accent-expense';
+                    return (
+                      <div key={i} className="bg-[var(--bg)] rounded-md p-1.5 text-[10px] font-mono">
+                        <div className="flex justify-between items-baseline">
+                          <span className="text-muted">{entry.time}</span>
+                          <span className={tone}>{String(entry.status)}</span>
+                        </div>
+                        <div className="truncate">{entry.op} <span className="text-muted">{entry.summary}</span></div>
+                        <div className="text-muted truncate">{entry.message}</div>
+                      </div>
+                    );
+                  })}
+                  <button
+                    onClick={clearSyncLog}
+                    className="w-full text-[10px] text-muted underline underline-offset-2"
+                  >
+                    Clear log
+                  </button>
+                </div>
               )}
             </motion.div>
           </>
