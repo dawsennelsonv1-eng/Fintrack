@@ -1,4 +1,10 @@
 // src/App.jsx
+// ROUND C — REPLACE the entire file with this version.
+//
+// What changed: registered the new Compare module under tab id 'compare'.
+// CalendarMod is kept registered too (in case you swap it back into the nav
+// or link to it from somewhere else); only BottomNav decides what's visible.
+
 import { useEffect, lazy, Suspense } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useStore, selectTheme, selectActiveTab } from './store/useStore';
@@ -17,6 +23,7 @@ const Budgets     = lazy(() => import('./modules/Budgets'));
 const Investments = lazy(() => import('./modules/Investments'));
 const CalendarMod = lazy(() => import('./modules/CalendarView'));
 const Debt        = lazy(() => import('./modules/Debt'));
+const Compare     = lazy(() => import('./modules/Compare'));
 
 const MODULES = {
   dashboard:   Dashboard,
@@ -24,6 +31,7 @@ const MODULES = {
   investments: Investments,
   calendar:    CalendarMod,
   debt:        Debt,
+  compare:     Compare,
 };
 
 const slide = {
