@@ -1,4 +1,13 @@
 // src/modules/Dashboard.jsx
+// ROUND B — REPLACE the entire file with this version.
+//
+// What's new:
+//   • BucketBars section between SpendingBreakdown and TransactionHistory
+//   • Shows horizontal bars per bucket: spent this month vs remaining cap
+//   • Cap = bucket.percentage of MTD income (when income exists),
+//     otherwise falls back to bucket balance
+//   • Uses bucket.color for the fill — editorial, no rainbow
+
 import { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
@@ -8,9 +17,9 @@ import {
 import { ArrowDownLeft, ArrowUpRight, Wallet, TrendingUp, AlertCircle, PieChart as PieIcon } from 'lucide-react';
 import {
   useStore,
-  selectTransactions, selectInvestments,
+  selectTransactions, selectInvestments, selectBuckets,
   selectTotalDebtInBase, selectBaseCurrency, selectRates,
-  computeMonthSummary, computeInvestmentTotals,
+  computeMonthSummary, computeInvestmentTotals, computeBucketMTD,
 } from '../store/useStore';
 import { convert, formatMoney, formatCompact } from '../lib/currency';
 import { fadeUp, ease, relativeTime } from '../lib/util';
@@ -21,6 +30,7 @@ import PendingInbox from '../components/PendingInbox';
 export default function Dashboard() {
   const transactions = useStore(selectTransactions);
   const investments  = useStore(selectInvestments);
+  const buckets      = useStore(selectBuckets);
   const debt         = useStore(selectTotalDebtInBase);
   const baseCurrency = useStore(selectBaseCurrency);
   const rates        = useStore(selectRates);
@@ -125,6 +135,17 @@ export default function Dashboard() {
         />
       </motion.section>
 
+      {/* NEW — Bucket bars */}
+      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.14 }} className="mb-6">
+        <BucketBars
+          buckets={buckets}
+          transactions={transactions}
+          baseCurrency={baseCurrency}
+          rates={rates}
+          mtdIncome={summary.income}
+        />
+      </motion.section>
+
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.15 }}>
         <TransactionHistory
           transactions={transactions}
@@ -136,6 +157,108 @@ export default function Dashboard() {
 
       {sheet}
     </main>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BucketBars — Round B addition
+// ─────────────────────────────────────────────────────────────────────────────
+function BucketBars({ buckets, transactions, baseCurrency, rates, mtdIncome }) {
+  const data = useMemo(() => {
+    const mtd = computeBucketMTD(transactions, baseCurrency, rates);
+    const sorted = [...buckets]
+      .filter((b) => b.enabled !== false)
+      .sort((a, b) => a.order - b.order);
+
+    return sorted.map((b) => {
+      const m = mtd[b.key] || { inflow: 0, outflow: 0 };
+      // Cap = MTD income share (your % of this month's income).
+      // If no income yet this month, cap = inflow into this bucket so far
+      // (gives a meaningful "remaining" even before any income).
+      const cap = mtdIncome > 0
+        ? (mtdIncome * (b.percentage / 100))
+        : Math.max(m.inflow, m.outflow); // fallback: at least show outflow
+      const spent = m.outflow;
+      const remaining = Math.max(0, cap - spent);
+      const pctSpent = cap > 0 ? Math.min(1, spent / cap) : (spent > 0 ? 1 : 0);
+      const overspent = spent > cap && cap > 0;
+
+      return {
+        key: b.key,
+        name: b.name,
+        color: b.color,
+        spent,
+        cap,
+        remaining,
+        pctSpent,
+        overspent,
+      };
+    });
+  }, [buckets, transactions, baseCurrency, rates, mtdIncome]);
+
+  const hasAnyActivity = data.some((d) => d.spent > 0 || d.cap > 0);
+
+  return (
+    <div className="surface border rounded-2xl p-5">
+      <div className="flex items-baseline justify-between mb-4">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">Buckets</div>
+          <div className="font-display text-2xl mt-0.5">This month</div>
+        </div>
+        <span className="text-[11px] text-muted">Spent vs remaining</span>
+      </div>
+
+      {!hasAnyActivity ? (
+        <div className="py-6 text-center">
+          <Wallet size={22} className="mx-auto text-muted mb-2" strokeWidth={1.5} />
+          <div className="text-sm text-muted">No bucket activity yet this month</div>
+        </div>
+      ) : (
+        <ul className="space-y-3">
+          {data.map((d) => (
+            <li key={d.key}>
+              <div className="flex items-baseline justify-between mb-1.5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
+                  <span className="text-[12px] font-medium truncate">{d.name}</span>
+                </div>
+                <div className="text-[11px] num text-muted shrink-0 ml-2">
+                  {d.cap > 0 ? (
+                    <>
+                      <span className={d.overspent ? 'text-accent-expense font-medium' : ''}>
+                        {formatCompact(d.spent, baseCurrency)}
+                      </span>
+                      <span className="text-muted/60"> / {formatCompact(d.cap, baseCurrency)}</span>
+                    </>
+                  ) : (
+                    <span>{formatCompact(d.spent, baseCurrency)} spent</span>
+                  )}
+                </div>
+              </div>
+              <div className="h-2 rounded-full bg-[var(--bg)] overflow-hidden relative">
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${d.pctSpent * 100}%` }}
+                  transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
+                  className="h-full rounded-full"
+                  style={{ backgroundColor: d.overspent ? 'var(--accent-expense, #c2452f)' : d.color }}
+                />
+              </div>
+              {d.cap > 0 && !d.overspent && (
+                <div className="text-[10px] text-muted num mt-1">
+                  {formatMoney(d.remaining, baseCurrency)} left
+                </div>
+              )}
+              {d.overspent && (
+                <div className="text-[10px] text-accent-expense num mt-1 font-medium">
+                  Over by {formatMoney(d.spent - d.cap, baseCurrency)}
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
