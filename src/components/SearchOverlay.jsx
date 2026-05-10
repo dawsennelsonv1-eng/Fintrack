@@ -1,7 +1,15 @@
 // src/components/SearchOverlay.jsx
+// ROUND C — REPLACE the entire file with this version.
+//
+// What's new:
+//   • Date range filter row inside the filter panel
+//   • Presets: Today, Yesterday, This week, This month, Last month, Custom
+//   • Custom opens two date inputs (from / to)
+//   • Plumbs into searchTransactions which already supports dateFrom/dateTo
+
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, X, ArrowDownLeft, ArrowUpRight, SlidersHorizontal, Hash } from 'lucide-react';
+import { Search, X, ArrowDownLeft, ArrowUpRight, SlidersHorizontal, Hash, Calendar } from 'lucide-react';
 import {
   useStore, selectTransactions, selectCategories, selectBaseCurrency, selectRates,
   selectSearchOpen, selectSearchQuery,
@@ -10,6 +18,53 @@ import {
 import { convert, formatMoney } from '../lib/currency';
 import { useTxActions } from './TxActions';
 import { relativeTime } from '../lib/util';
+
+// Date range preset helpers — return ISO date strings (YYYY-MM-DD)
+function presetRange(id) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yest = new Date(today); yest.setDate(yest.getDate() - 1);
+
+  const startOfWeek = new Date(today);
+  // Week starts Sunday (matches the rest of the app's recurring scheduler)
+  startOfWeek.setDate(today.getDate() - today.getDay());
+
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const endOfThisMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+
+  const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const endOfLastMonth   = new Date(now.getFullYear(), now.getMonth(), 0);
+
+  // End-of-day for the "to" bound (23:59:59.999)
+  const eod = (d) => {
+    const x = new Date(d);
+    x.setHours(23, 59, 59, 999);
+    return x.toISOString();
+  };
+  const sod = (d) => {
+    const x = new Date(d);
+    x.setHours(0, 0, 0, 0);
+    return x.toISOString();
+  };
+
+  switch (id) {
+    case 'today':      return { from: sod(today),          to: eod(today) };
+    case 'yesterday':  return { from: sod(yest),           to: eod(yest)  };
+    case 'thisWeek':   return { from: sod(startOfWeek),    to: eod(today) };
+    case 'thisMonth':  return { from: sod(startOfMonth),   to: eod(endOfThisMonth) };
+    case 'lastMonth':  return { from: sod(startOfLastMonth), to: eod(endOfLastMonth) };
+    default:           return null;
+  }
+}
+
+const DATE_PRESETS = [
+  { id: 'today',     label: 'Today' },
+  { id: 'yesterday', label: 'Yesterday' },
+  { id: 'thisWeek',  label: 'This week' },
+  { id: 'thisMonth', label: 'This month' },
+  { id: 'lastMonth', label: 'Last month' },
+  { id: 'custom',    label: 'Custom' },
+];
 
 export default function SearchOverlay() {
   const open = useStore(selectSearchOpen);
@@ -27,6 +82,11 @@ export default function SearchOverlay() {
   const [showFilters, setShowFilters] = useState(false);
   const inputRef = useRef(null);
 
+  // ─── Round C: date range state ─────────────────────────────────
+  const [datePreset, setDatePreset] = useState(null);  // null | 'today' | … | 'custom'
+  const [customFrom, setCustomFrom] = useState('');    // YYYY-MM-DD
+  const [customTo, setCustomTo]     = useState('');
+
   const allTags = useMemo(() => gatherTags(transactions), [transactions]);
 
   useEffect(() => {
@@ -38,6 +98,9 @@ export default function SearchOverlay() {
       setFilterCategory(null);
       setFilterTags([]);
       setShowFilters(false);
+      setDatePreset(null);
+      setCustomFrom('');
+      setCustomTo('');
     }
   }, [open]);
 
@@ -49,15 +112,29 @@ export default function SearchOverlay() {
     }
   }, [open]);
 
+  // Resolve the active date range from preset or custom fields
+  const dateRange = useMemo(() => {
+    if (!datePreset) return { from: null, to: null };
+    if (datePreset === 'custom') {
+      return {
+        from: customFrom ? new Date(customFrom + 'T00:00:00').toISOString() : null,
+        to:   customTo   ? new Date(customTo   + 'T23:59:59').toISOString() : null,
+      };
+    }
+    return presetRange(datePreset) || { from: null, to: null };
+  }, [datePreset, customFrom, customTo]);
+
   const results = useMemo(() => {
     const filtered = searchTransactions(transactions, {
       query,
       type: filterType,
       category: filterCategory,
       tags: filterTags,
+      dateFrom: dateRange.from,
+      dateTo:   dateRange.to,
     });
     return filtered.sort((a, b) => new Date(b.date) - new Date(a.date));
-  }, [transactions, query, filterType, filterCategory, filterTags]);
+  }, [transactions, query, filterType, filterCategory, filterTags, dateRange]);
 
   const totals = useMemo(() => {
     let income = 0, expense = 0;
@@ -72,7 +149,12 @@ export default function SearchOverlay() {
 
   const { bind, sheet } = useTxActions();
 
-  const filterCount = (filterType ? 1 : 0) + (filterCategory ? 1 : 0) + filterTags.length;
+  const dateActive = !!datePreset && (datePreset !== 'custom' || customFrom || customTo);
+  const filterCount =
+    (filterType ? 1 : 0) +
+    (filterCategory ? 1 : 0) +
+    filterTags.length +
+    (dateActive ? 1 : 0);
 
   return (
     <AnimatePresence>
@@ -129,6 +211,58 @@ export default function SearchOverlay() {
                     className="overflow-hidden"
                   >
                     <div className="space-y-3 pb-3">
+                      {/* Date range — Round C */}
+                      <div>
+                        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted mb-1.5">
+                          <Calendar size={11} /> Date range
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          <FilterChip active={datePreset === null} onClick={() => setDatePreset(null)}>Any time</FilterChip>
+                          {DATE_PRESETS.map((p) => (
+                            <FilterChip
+                              key={p.id}
+                              active={datePreset === p.id}
+                              onClick={() => setDatePreset(datePreset === p.id ? null : p.id)}
+                            >
+                              {p.label}
+                            </FilterChip>
+                          ))}
+                        </div>
+                        <AnimatePresence>
+                          {datePreset === 'custom' && (
+                            <motion.div
+                              initial={{ height: 0, opacity: 0 }}
+                              animate={{ height: 'auto', opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              className="overflow-hidden"
+                            >
+                              <div className="grid grid-cols-2 gap-2 mt-2">
+                                <div>
+                                  <div className="text-[10px] text-muted mb-1 px-1">From</div>
+                                  <input
+                                    type="date"
+                                    value={customFrom}
+                                    onChange={(e) => setCustomFrom(e.target.value)}
+                                    max={customTo || undefined}
+                                    className="w-full px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-xs num focus:ring-2 focus:ring-[var(--border)]"
+                                  />
+                                </div>
+                                <div>
+                                  <div className="text-[10px] text-muted mb-1 px-1">To</div>
+                                  <input
+                                    type="date"
+                                    value={customTo}
+                                    onChange={(e) => setCustomTo(e.target.value)}
+                                    min={customFrom || undefined}
+                                    className="w-full px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-xs num focus:ring-2 focus:ring-[var(--border)]"
+                                  />
+                                </div>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+
                       {/* Type */}
                       <div className="flex items-center gap-2">
                         <span className="text-[10px] uppercase tracking-wider text-muted shrink-0">Type</span>
@@ -180,7 +314,14 @@ export default function SearchOverlay() {
 
                       {filterCount > 0 && (
                         <button
-                          onClick={() => { setFilterType(null); setFilterCategory(null); setFilterTags([]); }}
+                          onClick={() => {
+                            setFilterType(null);
+                            setFilterCategory(null);
+                            setFilterTags([]);
+                            setDatePreset(null);
+                            setCustomFrom('');
+                            setCustomTo('');
+                          }}
                           className="text-[11px] text-accent-expense hover:underline"
                         >
                           Clear all filters
