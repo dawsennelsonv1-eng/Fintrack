@@ -1,13 +1,4 @@
 // src/modules/Dashboard.jsx
-// ROUND B — REPLACE the entire file with this version.
-//
-// What's new:
-//   • BucketBars section between SpendingBreakdown and TransactionHistory
-//   • Shows horizontal bars per bucket: spent this month vs remaining cap
-//   • Cap = bucket.percentage of MTD income (when income exists),
-//     otherwise falls back to bucket balance
-//   • Uses bucket.color for the fill — editorial, no rainbow
-
 import { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
@@ -17,9 +8,9 @@ import {
 import { ArrowDownLeft, ArrowUpRight, Wallet, TrendingUp, AlertCircle, PieChart as PieIcon } from 'lucide-react';
 import {
   useStore,
-  selectTransactions, selectInvestments, selectBuckets,
+  selectTransactions, selectInvestments,
   selectTotalDebtInBase, selectBaseCurrency, selectRates,
-  computeMonthSummary, computeInvestmentTotals, computeBucketMTD,
+  computeMonthSummary, computeInvestmentTotals, computeTotalLiquid,
 } from '../store/useStore';
 import { convert, formatMoney, formatCompact } from '../lib/currency';
 import { fadeUp, ease, relativeTime } from '../lib/util';
@@ -30,13 +21,18 @@ import PendingInbox from '../components/PendingInbox';
 export default function Dashboard() {
   const transactions = useStore(selectTransactions);
   const investments  = useStore(selectInvestments);
-  const buckets      = useStore(selectBuckets);
   const debt         = useStore(selectTotalDebtInBase);
   const baseCurrency = useStore(selectBaseCurrency);
   const rates        = useStore(selectRates);
 
   const summary   = useMemo(() => computeMonthSummary(transactions, baseCurrency, rates), [transactions, baseCurrency, rates]);
   const invTotals = useMemo(() => computeInvestmentTotals(investments, baseCurrency, rates), [investments, baseCurrency, rates]);
+
+  // Round D: total liquid = sum of positive bucket balances
+  const totalLiquid = useMemo(
+    () => computeTotalLiquid(transactions, baseCurrency, rates),
+    [transactions, baseCurrency, rates]
+  );
 
   const netWorth = useMemo(() => {
     let liquid = 0;
@@ -54,22 +50,52 @@ export default function Dashboard() {
   return (
     <main className="max-w-2xl mx-auto px-5 pt-4 pb-32">
       <PendingInbox />
+
+      {/* Round D: Available to spend HERO — top, eye-catching */}
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease }} className="mb-5">
-        <div className="flex items-center justify-between mb-1.5">
-          <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">Net Worth</div>
-          <SyncBadge />
-        </div>
-        <div className="flex items-baseline gap-2">
-          <span className={`font-display ${netWorth < 0 ? 'text-accent-expense' : ''} text-6xl num leading-none`}>
-            {formatMoney(netWorth, baseCurrency)}
-          </span>
-        </div>
-        <div className="mt-2 flex items-center gap-3 text-xs text-muted">
-          <span>Liquid + Investments − Debt</span>
+        <div
+          className="relative rounded-3xl p-6 overflow-hidden border"
+          style={{
+            background:
+              'linear-gradient(135deg, rgba(61,139,95,0.18) 0%, rgba(212,169,66,0.12) 100%)',
+            borderColor: 'rgba(61,139,95,0.25)',
+          }}
+        >
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-10 h-10 rounded-xl bg-accent-income/15 text-accent-income flex items-center justify-center">
+                <Wallet size={18} strokeWidth={2.25} />
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">
+                  Available to spend
+                </div>
+                <div className="text-[11px] text-muted mt-0.5">Total across all buckets</div>
+              </div>
+            </div>
+            <SyncBadge />
+          </div>
+          <div
+            className={`font-display num leading-none ${totalLiquid < 0 ? 'text-accent-expense' : ''}`}
+            style={{ fontSize: 'clamp(2.75rem, 12vw, 4rem)' }}
+          >
+            {formatMoney(totalLiquid, baseCurrency)}
+          </div>
         </div>
       </motion.section>
 
-      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.05 }}
+      {/* Net Worth — secondary */}
+      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.05 }} className="mb-5">
+        <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1.5">Net Worth</div>
+        <div className="flex items-baseline gap-2">
+          <span className={`font-display text-4xl num leading-none ${netWorth < 0 ? 'text-accent-expense' : ''}`}>
+            {formatMoney(netWorth, baseCurrency)}
+          </span>
+        </div>
+        <div className="mt-1.5 text-[11px] text-muted">Liquid + Investments − Debt</div>
+      </motion.section>
+
+      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.08 }}
         className="grid grid-cols-2 gap-3 mb-5">
         <StatCard label="Income · MTD"   value={summary.income}     tone="income"  icon={ArrowDownLeft} currency={baseCurrency} />
         <StatCard label="Expenses · MTD" value={summary.expense}    tone="expense" icon={ArrowUpRight}  currency={baseCurrency} />
@@ -135,17 +161,6 @@ export default function Dashboard() {
         />
       </motion.section>
 
-      {/* NEW — Bucket bars */}
-      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.14 }} className="mb-6">
-        <BucketBars
-          buckets={buckets}
-          transactions={transactions}
-          baseCurrency={baseCurrency}
-          rates={rates}
-          mtdIncome={summary.income}
-        />
-      </motion.section>
-
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.15 }}>
         <TransactionHistory
           transactions={transactions}
@@ -160,120 +175,9 @@ export default function Dashboard() {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// BucketBars — Round B addition
-// ─────────────────────────────────────────────────────────────────────────────
-function BucketBars({ buckets, transactions, baseCurrency, rates, mtdIncome }) {
-  const data = useMemo(() => {
-    const mtd = computeBucketMTD(transactions, baseCurrency, rates);
-    const sorted = [...buckets]
-      .filter((b) => b.enabled !== false)
-      .sort((a, b) => a.order - b.order);
-
-    return sorted.map((b) => {
-      const m = mtd[b.key] || { inflow: 0, outflow: 0 };
-      // Cap = MTD income share (your % of this month's income).
-      // If no income yet this month, cap = inflow into this bucket so far
-      // (gives a meaningful "remaining" even before any income).
-      const cap = mtdIncome > 0
-        ? (mtdIncome * (b.percentage / 100))
-        : Math.max(m.inflow, m.outflow); // fallback: at least show outflow
-      const spent = m.outflow;
-      const remaining = Math.max(0, cap - spent);
-      const pctSpent = cap > 0 ? Math.min(1, spent / cap) : (spent > 0 ? 1 : 0);
-      const overspent = spent > cap && cap > 0;
-
-      return {
-        key: b.key,
-        name: b.name,
-        color: b.color,
-        spent,
-        cap,
-        remaining,
-        pctSpent,
-        overspent,
-      };
-    });
-  }, [buckets, transactions, baseCurrency, rates, mtdIncome]);
-
-  const hasAnyActivity = data.some((d) => d.spent > 0 || d.cap > 0);
-
-  return (
-    <div className="surface border rounded-2xl p-5">
-      <div className="flex items-baseline justify-between mb-4">
-        <div>
-          <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">Buckets</div>
-          <div className="font-display text-2xl mt-0.5">This month</div>
-        </div>
-        <span className="text-[11px] text-muted">Spent vs remaining</span>
-      </div>
-
-      {!hasAnyActivity ? (
-        <div className="py-6 text-center">
-          <Wallet size={22} className="mx-auto text-muted mb-2" strokeWidth={1.5} />
-          <div className="text-sm text-muted">No bucket activity yet this month</div>
-        </div>
-      ) : (
-        <ul className="space-y-3">
-          {data.map((d) => (
-            <li key={d.key}>
-              <div className="flex items-baseline justify-between mb-1.5">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
-                  <span className="text-[12px] font-medium truncate">{d.name}</span>
-                </div>
-                <div className="text-[11px] num text-muted shrink-0 ml-2">
-                  {d.cap > 0 ? (
-                    <>
-                      <span className={d.overspent ? 'text-accent-expense font-medium' : ''}>
-                        {formatCompact(d.spent, baseCurrency)}
-                      </span>
-                      <span className="text-muted/60"> / {formatCompact(d.cap, baseCurrency)}</span>
-                    </>
-                  ) : (
-                    <span>{formatCompact(d.spent, baseCurrency)} spent</span>
-                  )}
-                </div>
-              </div>
-              <div className="h-2 rounded-full bg-[var(--bg)] overflow-hidden relative">
-                <motion.div
-                  initial={{ width: 0 }}
-                  animate={{ width: `${d.pctSpent * 100}%` }}
-                  transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
-                  className="h-full rounded-full"
-                  style={{ backgroundColor: d.overspent ? 'var(--accent-expense, #c2452f)' : d.color }}
-                />
-              </div>
-              {d.cap > 0 && !d.overspent && (
-                <div className="text-[10px] text-muted num mt-1">
-                  {formatMoney(d.remaining, baseCurrency)} left
-                </div>
-              )}
-              {d.overspent && (
-                <div className="text-[10px] text-accent-expense num mt-1 font-medium">
-                  Over by {formatMoney(d.spent - d.cap, baseCurrency)}
-                </div>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-// Editorial palette — calm earthy/jewel tones, not skittles
 const PIE_COLORS = [
-  '#c2452f', // burnt red
-  '#d4a942', // ochre
-  '#3d8b5f', // forest
-  '#5b8def', // dusty blue
-  '#9b59b6', // plum
-  '#e07a5f', // terracotta
-  '#7a8a8c', // slate
-  '#2c8d9c', // teal
-  '#a67c5a', // taupe
-  '#9aa3ad', // pewter
+  '#c2452f', '#d4a942', '#3d8b5f', '#5b8def', '#9b59b6',
+  '#e07a5f', '#7a8a8c', '#2c8d9c', '#a67c5a', '#9aa3ad',
 ];
 
 function SpendingBreakdown({ transactions, baseCurrency, rates }) {
@@ -320,20 +224,8 @@ function SpendingBreakdown({ transactions, baseCurrency, rates }) {
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-3">
-          <CategoryPie
-            data={incomeData}
-            total={totalIncome}
-            label="Income"
-            currency={baseCurrency}
-            tone="income"
-          />
-          <CategoryPie
-            data={expenseData}
-            total={totalExpense}
-            label="Expenses"
-            currency={baseCurrency}
-            tone="expense"
-          />
+          <CategoryPie data={incomeData} total={totalIncome} label="Income" currency={baseCurrency} tone="income" />
+          <CategoryPie data={expenseData} total={totalExpense} label="Expenses" currency={baseCurrency} tone="expense" />
         </div>
       )}
     </div>
@@ -354,25 +246,15 @@ function CategoryPie({ data, total, label, currency, tone }) {
       </div>
 
       {isEmpty ? (
-        <div className="h-32 flex items-center justify-center text-[11px] text-muted">
-          None
-        </div>
+        <div className="h-32 flex items-center justify-center text-[11px] text-muted">None</div>
       ) : (
         <>
           <div className="h-32 -mx-1">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
-                <Pie
-                  data={data}
-                  dataKey="value"
-                  cx="50%" cy="50%"
-                  innerRadius={32}
-                  outerRadius={56}
-                  paddingAngle={2}
-                  isAnimationActive
-                  animationDuration={600}
-                  stroke="none"
-                >
+                <Pie data={data} dataKey="value" cx="50%" cy="50%"
+                  innerRadius={32} outerRadius={56} paddingAngle={2}
+                  isAnimationActive animationDuration={600} stroke="none">
                   {data.map((_, i) => (
                     <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                   ))}
@@ -386,10 +268,8 @@ function CategoryPie({ data, total, label, currency, tone }) {
               const pct = total > 0 ? (d.value / total) * 100 : 0;
               return (
                 <li key={d.name} className="flex items-center gap-1.5 text-[10px]">
-                  <span
-                    className="w-1.5 h-1.5 rounded-full shrink-0"
-                    style={{ backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }}
-                  />
+                  <span className="w-1.5 h-1.5 rounded-full shrink-0"
+                    style={{ backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }} />
                   <span className="truncate flex-1">{d.name}</span>
                   <span className="num text-muted">{pct.toFixed(0)}%</span>
                 </li>
@@ -482,7 +362,6 @@ function TransactionHistory({ transactions, baseCurrency, rates, bind }) {
   const visible = transactions.slice(0, showCount);
   const hasMore = showCount < total;
 
-  // Group by date
   const grouped = useMemo(() => {
     const groups = {};
     for (const t of visible) {
