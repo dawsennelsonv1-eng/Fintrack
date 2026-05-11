@@ -1,10 +1,4 @@
 // src/App.jsx
-// ROUND C — REPLACE the entire file with this version.
-//
-// What changed: registered the new Compare module under tab id 'compare'.
-// CalendarMod is kept registered too (in case you swap it back into the nav
-// or link to it from somewhere else); only BottomNav decides what's visible.
-
 import { useEffect, lazy, Suspense } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useStore, selectTheme, selectActiveTab } from './store/useStore';
@@ -17,13 +11,13 @@ import InstallPrompt from './components/InstallPrompt';
 import SearchOverlay from './components/SearchOverlay';
 import Settings from './components/Settings';
 
-// Lazy-load modules so the initial bundle stays slim
+// Round D: Compare module is GONE as a standalone route — it now lives
+// inside the Calendar tab as a view toggle.
 const Dashboard   = lazy(() => import('./modules/Dashboard'));
 const Budgets     = lazy(() => import('./modules/Budgets'));
 const Investments = lazy(() => import('./modules/Investments'));
 const CalendarMod = lazy(() => import('./modules/CalendarView'));
 const Debt        = lazy(() => import('./modules/Debt'));
-const Compare     = lazy(() => import('./modules/Compare'));
 
 const MODULES = {
   dashboard:   Dashboard,
@@ -31,7 +25,6 @@ const MODULES = {
   investments: Investments,
   calendar:    CalendarMod,
   debt:        Debt,
-  compare:     Compare,
 };
 
 const slide = {
@@ -54,7 +47,6 @@ export default function App() {
     <div className="min-h-screen font-sans">
       <Header />
 
-      {/* Persistent debt indicator — sits below header */}
       <div className="max-w-2xl mx-auto px-5 pt-3">
         <DebtPill />
       </div>
@@ -70,7 +62,6 @@ export default function App() {
       <QuickAdd />
       <BottomNav />
 
-      {/* Overlays */}
       <SearchOverlay />
       <Settings />
       <UndoToast />
