@@ -1,17 +1,14 @@
 // src/components/BottomNav.jsx
-// ROUND C — REPLACE the entire file with this version.
-//
-// What changed: "Calendar" tab swapped for "Compare". Same 5-tab layout.
-// (Calendar module file is preserved on disk; just not in the nav.)
-
 import { motion } from 'framer-motion';
-import { LayoutGrid, Target, TrendingUp, BarChart3, AlertCircle } from 'lucide-react';
+import { LayoutGrid, Target, Calendar, TrendingUp, AlertCircle } from 'lucide-react';
 import { useStore, selectActiveTab, selectTotalDebtInBase } from '../store/useStore';
 
+// Round D: Calendar is back. Compare lives INSIDE the Calendar tab as a
+// view toggle, so we don't need a separate Compare tab.
 const TABS = [
   { id: 'dashboard',   label: 'Home',     icon: LayoutGrid },
   { id: 'budgets',     label: 'Budgets',  icon: Target },
-  { id: 'compare',     label: 'Compare',  icon: BarChart3 },
+  { id: 'calendar',    label: 'Calendar', icon: Calendar },
   { id: 'investments', label: 'Wealth',   icon: TrendingUp },
   { id: 'debt',        label: 'Debt',     icon: AlertCircle, alert: true },
 ];

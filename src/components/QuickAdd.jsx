@@ -1,28 +1,17 @@
 // src/components/QuickAdd.jsx
-// ROUND B — REPLACE the entire file with this version.
-//
-// What's new:
-//   • Spending warning overlay before save, for EXPENSE transactions only
-//   • Triggers when:
-//       (a) the routed bucket has an active goal AND this expense impacts it, OR
-//       (b) the routed bucket would go negative after this expense
-//   • Shows: bucket before/after, per-goal deficit and delay-days, Cancel/Confirm
-//   • Skipped for templates, recurring schedules, transfers, income, and edits
-//     where amount + category + type are unchanged
-//   • Uses computeBucketImpact() and computeBucketBalances() from the store
-
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plus, X, ArrowDownLeft, ArrowUpRight, Repeat, Bookmark, Save,
-  ChevronDown, ChevronUp, Calendar, Hash, FileText, Tag, Check, AlertTriangle,
+  ChevronDown, ChevronUp, Calendar, Hash, Tag, Users, Wallet,
 } from 'lucide-react';
 import {
   useStore, selectRates, selectBaseCurrency, selectEditingTxId, selectTransactions,
-  selectCategories, selectTemplates, selectGoals, selectBuckets,
-  gatherTags, computeBucketImpact, computeBucketBalances, buildCategoryToBucket,
+  selectCategories, selectTemplates, selectBuckets, selectDebts,
+  gatherTags,
+  BORROWED_CATEGORY, LENT_CATEGORY, HOLDING_BUCKET_KEY,
 } from '../store/useStore';
-import { CURRENCIES, convert, formatMoney } from '../lib/currency';
+import { CURRENCIES, formatMoney } from '../lib/currency';
 import DateTimePicker from './DateTimePicker';
 import TagInput from './TagInput';
 import * as Icons from 'lucide-react';
@@ -44,6 +33,11 @@ export default function QuickAdd() {
   const [tags, setTags] = useState([]);
   const [date, setDate] = useState(() => new Date().toISOString());
 
+  // Round D: borrow/lend extras
+  const [counterparty, setCounterparty] = useState('');
+  const [dueDate, setDueDate] = useState('');
+  const [sourceBucketKey, setSourceBucketKey] = useState('operations');
+
   // Foldable sections
   const [showDate, setShowDate] = useState(false);
   const [showTags, setShowTags] = useState(false);
@@ -60,24 +54,19 @@ export default function QuickAdd() {
   // Template-specific
   const [tplName, setTplName] = useState('');
 
-  // Round B — warning overlay state
-  const [warning, setWarning] = useState(null); // { impact, bucketName, balance, balanceAfter, willGoNegative }
-
-  const addTransaction = useStore((s) => s.addTransaction);
+  const addTransaction    = useStore((s) => s.addTransaction);
   const updateTransaction = useStore((s) => s.updateTransaction);
-  const setEditingTx = useStore((s) => s.setEditingTx);
-  const addRecurring = useStore((s) => s.addRecurring);
-  const addTemplate = useStore((s) => s.addTemplate);
-  const useTemplate = useStore((s) => s.useTemplate);
+  const setEditingTx      = useStore((s) => s.setEditingTx);
+  const addRecurring      = useStore((s) => s.addRecurring);
+  const addTemplate       = useStore((s) => s.addTemplate);
+  const useTemplate       = useStore((s) => s.useTemplate);
 
-  const editingId = useStore(selectEditingTxId);
+  const editingId  = useStore(selectEditingTxId);
   const transactions = useStore(selectTransactions);
   const categories = useStore(selectCategories);
-  const templates = useStore(selectTemplates);
-  const goals = useStore(selectGoals);
-  const buckets = useStore(selectBuckets);
-  const rates = useStore(selectRates);
-  const baseCurrency = useStore(selectBaseCurrency);
+  const templates  = useStore(selectTemplates);
+  const buckets    = useStore(selectBuckets);
+  const debts      = useStore(selectDebts);
 
   const editingTx = editingId ? transactions.find((t) => t.id === editingId) : null;
   const isEditing = !!editingTx;
@@ -89,6 +78,20 @@ export default function QuickAdd() {
       .filter((c) => c.type === type && c.enabled !== false)
       .sort((a, b) => a.order - b.order);
   }, [categories, type]);
+
+  // Round D: list of past creditors / counterparties for autocomplete
+  const counterpartySuggestions = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (const d of debts) {
+      const c = (d.creditor || '').trim();
+      if (c && !seen.has(c.toLowerCase())) {
+        seen.add(c.toLowerCase());
+        out.push(c);
+      }
+    }
+    return out;
+  }, [debts]);
 
   const topTemplates = useMemo(() => {
     return [...templates]
@@ -153,6 +156,9 @@ export default function QuickAdd() {
     setNotes('');
     setTags([]);
     setDate(new Date().toISOString());
+    setCounterparty('');
+    setDueDate('');
+    setSourceBucketKey('operations');
     setShowDate(false);
     setShowTags(false);
     setRecFrequency('monthly');
@@ -160,7 +166,6 @@ export default function QuickAdd() {
     setRecDayOfMonth(new Date().getDate());
     setTplName('');
     setShowSuggestions(false);
-    setWarning(null);
   };
 
   const close = () => {
@@ -170,7 +175,6 @@ export default function QuickAdd() {
     setTimeout(reset, 250);
   };
 
-  // Apply a suggestion to the form
   const applySuggestion = (sug) => {
     setNotes(sug.notes);
     setAmount(String(sug.amount));
@@ -180,7 +184,6 @@ export default function QuickAdd() {
     setShowSuggestions(false);
   };
 
-  // Apply a template
   const applyTemplate = (tpl) => {
     setType(tpl.type);
     setAmount(String(tpl.amount));
@@ -193,95 +196,37 @@ export default function QuickAdd() {
     useTemplate?.(tpl.id);
   };
 
-  // ─── Round B: warning check before save ──────────────────────────────────
-  // Returns null if save can proceed without warning; otherwise an object
-  // describing the impact for the overlay to render.
-  const checkWarning = (v) => {
-    // Skip warnings entirely for non-quick sections, non-expenses,
-    // and edits where the financial impact didn't change.
-    if (section !== 'quick') return null;
-    if (type !== 'expense') return null;
-
-    if (isEditing && editingTx) {
-      const sameAmount   = Number(editingTx.amount) === v;
-      const sameCategory = editingTx.category === category;
-      const sameType     = editingTx.type === type;
-      const sameCurrency = (editingTx.currency || 'USD') === currency;
-      if (sameAmount && sameCategory && sameType && sameCurrency) return null;
-    }
-
-    // Resolve target bucket
-    const categoryMap = buildCategoryToBucket(categories);
-    const bucketKey = categoryMap[category] || 'operations';
-    const bucket = buckets.find((b) => b.key === bucketKey);
-    const bucketName = bucket?.name || bucketKey;
-
-    // For edits: simulate the OLD transaction being removed before computing impact
-    // (otherwise we'd double-count this expense's effect in current balance)
-    let txList = transactions;
-    if (isEditing && editingTx) {
-      txList = transactions.filter((t) => t.id !== editingTx.id);
-    }
-
-    // Goal impact
-    const impact = computeBucketImpact({
-      transactions: txList,
-      goals,
-      categories,
-      base: baseCurrency,
-      rates,
-      category,
-      amount: v,
-      currency,
-      bucketKey,
-    });
-
-    // Bucket-negative check (separate from goals — fires even with no goals)
-    const balances = computeBucketBalances(txList, baseCurrency, rates);
-    const balance = balances[bucketKey] || 0;
-    const expenseBase = convert(v, currency, baseCurrency, rates);
-    const balanceAfter = balance - expenseBase;
-    const willGoNegative = balance >= 0 && balanceAfter < 0; // crosses zero
-
-    if (!impact && !willGoNegative) return null;
-
-    return {
-      impact,            // null if no goal impact
-      bucketKey,
-      bucketName,
-      balance,
-      balanceAfter,
-      willGoNegative,
-      // The form state at the moment we checked — used by Confirm to actually save
-      pending: { v, type, currency, category, notes, tags, date },
-    };
-  };
-
-  // Actually persist a transaction (used by submit and by Confirm in overlay)
-  const persistQuickTransaction = (v) => {
-    const tagsStr = tags.filter(Boolean).join(',');
-    const data = {
-      type, amount: v, currency, category,
-      notes: notes.trim(), tags: tagsStr, date,
-    };
-    if (isEditing) updateTransaction(editingId, data);
-    else addTransaction(data);
-  };
+  // Round D: detect special categories
+  const isBorrowed = type === 'income'  && category === BORROWED_CATEGORY;
+  const isLent     = type === 'expense' && category === LENT_CATEGORY;
+  const isSpecial  = isBorrowed || isLent;
 
   const submit = (e) => {
     e?.preventDefault?.();
     const v = parseFloat(amount);
     if (!v || v <= 0) return;
+
+    // Round D: enforce counterparty for borrow/lend
+    if (isSpecial && !counterparty.trim()) return;
+
     const tagsStr = tags.filter(Boolean).join(',');
 
     if (section === 'quick') {
-      // Round B — check warning before persisting
-      const w = checkWarning(v);
-      if (w) {
-        setWarning(w);
-        return; // wait for Confirm/Cancel
+      const data = {
+        type, amount: v, currency, category,
+        notes: notes.trim(), tags: tagsStr, date,
+      };
+      // Round D: pass borrow/lend extras
+      if (isBorrowed) {
+        data.counterparty = counterparty.trim();
+        if (dueDate) data.dueDate = new Date(dueDate + 'T00:00:00').toISOString();
+      } else if (isLent) {
+        data.counterparty = counterparty.trim();
+        data.sourceBucketKey = sourceBucketKey;
+        if (dueDate) data.dueDate = new Date(dueDate + 'T00:00:00').toISOString();
       }
-      persistQuickTransaction(v);
+      if (isEditing) updateTransaction(editingId, data);
+      else addTransaction(data);
     } else if (section === 'recurring') {
       addRecurring({
         name: notes.trim() || category,
@@ -304,19 +249,18 @@ export default function QuickAdd() {
     close();
   };
 
-  const confirmSave = () => {
-    const v = warning?.pending?.v;
-    if (v) persistQuickTransaction(v);
-    setWarning(null);
-    close();
-  };
-
   const cfg = CURRENCIES[currency] || CURRENCIES.USD;
-  const valid = amount && parseFloat(amount) > 0;
+  const valid = amount && parseFloat(amount) > 0 && (!isSpecial || counterparty.trim().length > 0);
+
+  // Buckets available as Lent source (exclude Holding — can't lend from holding)
+  const sourceBuckets = useMemo(() => {
+    return buckets
+      .filter((b) => b.enabled !== false && b.key !== HOLDING_BUCKET_KEY)
+      .sort((a, b) => a.order - b.order);
+  }, [buckets]);
 
   return (
     <>
-      {/* Floating action button */}
       <motion.button
         onClick={() => setOpen(true)}
         whileTap={{ scale: 0.92 }}
@@ -352,7 +296,6 @@ export default function QuickAdd() {
                   </button>
                 </div>
 
-                {/* Section tabs (hidden when editing) */}
                 {!isEditing && (
                   <div className="px-5 pb-2">
                     <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-[var(--surface)]">
@@ -375,10 +318,9 @@ export default function QuickAdd() {
                 )}
               </div>
 
-              {/* Content */}
               <div className="px-5 pt-5 space-y-5">
 
-                {/* Templates strip — only in 'quick' mode */}
+                {/* Templates strip */}
                 {section === 'quick' && !isEditing && topTemplates.length > 0 && (
                   <div>
                     <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-2 px-1">
@@ -409,7 +351,7 @@ export default function QuickAdd() {
                   </div>
                 )}
 
-                {/* Type toggle (income/expense) */}
+                {/* Type toggle */}
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button" onClick={() => setType('expense')}
@@ -433,7 +375,7 @@ export default function QuickAdd() {
                   </button>
                 </div>
 
-                {/* Big amount input — hero */}
+                {/* Big amount input */}
                 <div className="surface border rounded-2xl p-6">
                   <div className="text-[10px] uppercase tracking-[0.14em] text-muted text-center mb-2">
                     Amount
@@ -455,7 +397,6 @@ export default function QuickAdd() {
                     )}
                   </div>
 
-                  {/* Currency picker */}
                   <div className="grid grid-cols-3 gap-1 mt-4 p-1 rounded-xl bg-[var(--bg)]">
                     {Object.values(CURRENCIES).map((c) => {
                       const sel = currency === c.code;
@@ -473,7 +414,7 @@ export default function QuickAdd() {
                   </div>
                 </div>
 
-                {/* Name / notes field with autocomplete */}
+                {/* Name / notes */}
                 <div>
                   <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-2 px-1">
                     {section === 'recurring' ? 'Schedule name' : section === 'template' ? 'Description' : 'Name / description'}
@@ -513,11 +454,6 @@ export default function QuickAdd() {
                       )}
                     </AnimatePresence>
                   </div>
-                  {section !== 'recurring' && nameSuggestions.length === 0 && notes.length >= 2 && (
-                    <p className="text-[10px] text-muted mt-1 px-1">
-                      Tip: future entries with this name will autocomplete fields from this one.
-                    </p>
-                  )}
                 </div>
 
                 {/* Category picker */}
@@ -553,6 +489,102 @@ export default function QuickAdd() {
                     })}
                   </div>
                 </div>
+
+                {/* Round D: Borrow / Lend extra fields */}
+                <AnimatePresence>
+                  {isSpecial && section === 'quick' && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="overflow-hidden"
+                    >
+                      <div className={`rounded-2xl border p-4 space-y-3 ${
+                        isBorrowed ? 'bg-accent-income/5 border-accent-income/20' : 'bg-accent-expense/5 border-accent-expense/20'
+                      }`}>
+                        <div className="flex items-center gap-2">
+                          <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${
+                            isBorrowed ? 'bg-accent-income/10 text-accent-income' : 'bg-accent-expense/10 text-accent-expense'
+                          }`}>
+                            <Users size={14} />
+                          </div>
+                          <div className="text-[12px] font-medium">
+                            {isBorrowed ? 'Borrowing from someone' : 'Lending to someone'}
+                          </div>
+                        </div>
+
+                        {/* Counterparty (required) */}
+                        <div>
+                          <label className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1.5 block px-1">
+                            {isBorrowed ? 'From whom' : 'To whom'} <span className="text-accent-expense">*</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={counterparty}
+                            onChange={(e) => setCounterparty(e.target.value)}
+                            placeholder={isBorrowed ? 'Who lent you this?' : 'Who is borrowing?'}
+                            list="counterparty-list"
+                            className="w-full px-4 py-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] outline-none text-sm focus:ring-2 focus:ring-[var(--text)]/10"
+                          />
+                          <datalist id="counterparty-list">
+                            {counterpartySuggestions.map((c) => (
+                              <option key={c} value={c} />
+                            ))}
+                          </datalist>
+                        </div>
+
+                        {/* Source bucket (Lent only) */}
+                        {isLent && (
+                          <div>
+                            <label className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1.5 flex items-center gap-1 px-1">
+                              <Wallet size={11} /> From which bucket
+                            </label>
+                            <div className="grid grid-cols-2 gap-1.5">
+                              {sourceBuckets.map((b) => {
+                                const sel = sourceBucketKey === b.key;
+                                return (
+                                  <button
+                                    key={b.id}
+                                    type="button"
+                                    onClick={() => setSourceBucketKey(b.key)}
+                                    className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border text-left transition-all ${
+                                      sel
+                                        ? 'bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 border-transparent'
+                                        : 'bg-[var(--bg)] border-[var(--border)]'
+                                    }`}
+                                  >
+                                    <span className="w-2 h-2 rounded-full shrink-0"
+                                      style={{ backgroundColor: b.color }} />
+                                    <span className="text-[11px] font-medium truncate">{b.name}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Due date (optional) */}
+                        <div>
+                          <label className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1.5 flex items-center gap-1 px-1">
+                            <Calendar size={11} /> Due date <span className="opacity-60 normal-case tracking-normal">(optional)</span>
+                          </label>
+                          <input
+                            type="date"
+                            value={dueDate}
+                            onChange={(e) => setDueDate(e.target.value)}
+                            className="w-full px-4 py-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] outline-none text-sm num focus:ring-2 focus:ring-[var(--text)]/10"
+                          />
+                        </div>
+
+                        <p className="text-[10px] text-muted px-1">
+                          {isBorrowed
+                            ? 'This will land in your Holding bucket (no auto-split) and create a debt entry in the Debt tab.'
+                            : 'This will debit your chosen bucket and create a receivable entry in the Debt tab.'}
+                        </p>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
 
                 {/* Recurring fields */}
                 {section === 'recurring' && (
@@ -602,7 +634,7 @@ export default function QuickAdd() {
                 )}
               </div>
 
-              {/* Sticky footer with save */}
+              {/* Sticky footer */}
               <div className="fixed bottom-0 left-0 right-0 z-20 bg-[var(--bg)] border-t border-[var(--border)] pb-[env(safe-area-inset-bottom)]">
                 <div className="max-w-2xl mx-auto px-5 py-3">
                   <button
@@ -614,160 +646,17 @@ export default function QuickAdd() {
                     {section === 'recurring' && <><Repeat size={15} /> Save schedule</>}
                     {section === 'template' && <><Bookmark size={15} /> Save template</>}
                   </button>
+                  {isSpecial && !counterparty.trim() && (
+                    <p className="text-[10px] text-accent-expense text-center mt-2">
+                      {isBorrowed ? 'Who did you borrow from?' : 'Who did you lend to?'}
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
-
-            {/* Round B — spending warning overlay */}
-            <AnimatePresence>
-              {warning && (
-                <SpendingWarningOverlay
-                  warning={warning}
-                  baseCurrency={baseCurrency}
-                  onCancel={() => setWarning(null)}
-                  onConfirm={confirmSave}
-                />
-              )}
-            </AnimatePresence>
           </motion.div>
         )}
       </AnimatePresence>
-    </>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SpendingWarningOverlay — Round B
-// ─────────────────────────────────────────────────────────────────────────────
-function SpendingWarningOverlay({ warning, baseCurrency, onCancel, onConfirm }) {
-  const { impact, bucketName, balance, balanceAfter, willGoNegative } = warning;
-  const goals = impact?.affectedGoals || [];
-  const hasGoals = goals.length > 0;
-
-  // Headline tone — stronger if any goal becomes unfilled OR bucket goes negative
-  const broke = goals.some((g) => g.wasReady && !g.stillReady) || willGoNegative;
-
-  return (
-    <>
-      <motion.div
-        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm"
-        onClick={onCancel}
-      />
-      <motion.div
-        initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 20, opacity: 0 }}
-        transition={{ type: 'spring', damping: 28, stiffness: 320 }}
-        className="fixed left-1/2 -translate-x-1/2 bottom-4 sm:top-1/2 sm:bottom-auto sm:-translate-y-1/2 z-[70] w-[calc(100%-2rem)] max-w-md surface border rounded-2xl shadow-2xl overflow-hidden"
-      >
-        {/* Yellow warning banner */}
-        <div className={`flex items-start gap-3 px-5 py-4 ${broke ? 'bg-accent-expense/10' : 'bg-amber-500/10'}`}>
-          <AlertTriangle
-            size={20}
-            className={`shrink-0 mt-0.5 ${broke ? 'text-accent-expense' : 'text-amber-600 dark:text-amber-400'}`}
-            strokeWidth={2}
-          />
-          <div className="min-w-0">
-            <div className="text-[11px] uppercase tracking-[0.14em] font-semibold mb-0.5">
-              Heads up
-            </div>
-            <div className="text-sm">
-              {hasGoals && broke && 'This will leave a goal short.'}
-              {hasGoals && !broke && 'This will affect a goal you\'re saving toward.'}
-              {!hasGoals && willGoNegative && `This will push ${bucketName} into the negative.`}
-            </div>
-          </div>
-        </div>
-
-        <div className="px-5 py-4 space-y-3">
-          {/* Bucket impact */}
-          <div className="bg-[var(--bg)] rounded-xl px-4 py-3">
-            <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1.5">
-              {bucketName}
-            </div>
-            <div className="flex items-center gap-2 text-sm num">
-              <span className={balance < 0 ? 'text-accent-expense' : ''}>
-                {formatMoney(balance, baseCurrency)}
-              </span>
-              <span className="text-muted">→</span>
-              <span className={balanceAfter < 0 ? 'text-accent-expense font-medium' : 'font-medium'}>
-                {formatMoney(balanceAfter, baseCurrency)}
-              </span>
-              <span className="text-[11px] text-muted ml-auto">
-                {balanceAfter < 0 ? 'this month' : 'left'}
-              </span>
-            </div>
-          </div>
-
-          {/* Affected goals */}
-          {hasGoals && (
-            <div className="space-y-2">
-              <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold px-1">
-                Goal impact
-              </div>
-              {goals.map((g) => {
-                const filledPct = g.targetBase > 0 ? Math.min(1, g.filledAfter / g.targetBase) : 0;
-                const wasFilledPct = g.targetBase > 0 ? Math.min(1, g.filledBefore / g.targetBase) : 0;
-                return (
-                  <div key={g.id} className="surface border rounded-xl px-4 py-3">
-                    <div className="flex items-baseline justify-between mb-1">
-                      <div className="text-[13px] font-medium truncate min-w-0 mr-2">{g.name}</div>
-                      <div className="text-[10px] num text-muted shrink-0">
-                        {Math.round(wasFilledPct * 100)}% → <span className={!g.stillReady && g.wasReady ? 'text-accent-expense font-medium' : ''}>{Math.round(filledPct * 100)}%</span>
-                      </div>
-                    </div>
-                    {/* Mini progress bar */}
-                    <div className="h-1.5 rounded-full bg-[var(--bg)] overflow-hidden mb-2 relative">
-                      <div
-                        className="absolute top-0 left-0 h-full bg-muted/30"
-                        style={{ width: `${wasFilledPct * 100}%` }}
-                      />
-                      <motion.div
-                        initial={{ width: `${wasFilledPct * 100}%` }}
-                        animate={{ width: `${filledPct * 100}%` }}
-                        transition={{ duration: 0.5 }}
-                        className="absolute top-0 left-0 h-full bg-ink-900 dark:bg-ink-50 rounded-full"
-                      />
-                    </div>
-                    <div className="flex items-center justify-between text-[11px] num">
-                      {g.deficit > 0 ? (
-                        <span className="text-accent-expense">
-                          Short by {formatMoney(g.deficit, baseCurrency)}
-                        </span>
-                      ) : (
-                        <span className="text-muted">Still on track</span>
-                      )}
-                      {g.delayDays > 0 && (
-                        <span className="text-muted">
-                          {g.delayDays >= 999 ? 'no inflow yet' : `+${g.delayDays} day${g.delayDays === 1 ? '' : 's'} delay`}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        <div className="grid grid-cols-2 gap-2 px-5 pb-5 pt-1">
-          <button
-            onClick={onCancel}
-            className="py-3 rounded-xl bg-[var(--bg)] hover:bg-[var(--border)] transition-colors text-sm font-medium"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={onConfirm}
-            className={`py-3 rounded-xl text-sm font-medium transition-transform active:scale-[0.99] ${
-              broke
-                ? 'bg-accent-expense text-white'
-                : 'bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900'
-            }`}
-          >
-            Confirm anyway
-          </button>
-        </div>
-      </motion.div>
     </>
   );
 }
