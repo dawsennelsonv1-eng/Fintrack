@@ -1,15 +1,19 @@
-// src/modules/Dashboard.jsx
+// src/modules/Dashboard.jsx — Round E
 import { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
   PieChart, Pie, Cell,
 } from 'recharts';
-import { ArrowDownLeft, ArrowUpRight, Wallet, TrendingUp, AlertCircle, PieChart as PieIcon } from 'lucide-react';
+import {
+  ArrowDownLeft, ArrowUpRight, Wallet, TrendingUp, AlertCircle,
+  HandCoins, PieChart as PieIcon,
+} from 'lucide-react';
 import {
   useStore,
   selectTransactions, selectInvestments,
   selectTotalDebtInBase, selectBaseCurrency, selectRates,
+  selectBorrowedPool, selectNetWorth,
   computeMonthSummary, computeInvestmentTotals, computeTotalLiquid,
 } from '../store/useStore';
 import { convert, formatMoney, formatCompact } from '../lib/currency';
@@ -17,31 +21,24 @@ import { fadeUp, ease, relativeTime } from '../lib/util';
 import SyncBadge from '../components/SyncBadge';
 import { useTxActions } from '../components/TxActions';
 import PendingInbox from '../components/PendingInbox';
+import BucketBars from '../components/BucketBars';
 
 export default function Dashboard() {
   const transactions = useStore(selectTransactions);
   const investments  = useStore(selectInvestments);
   const debt         = useStore(selectTotalDebtInBase);
+  const borrowedPool = useStore(selectBorrowedPool);
+  const netWorth     = useStore(selectNetWorth);
   const baseCurrency = useStore(selectBaseCurrency);
   const rates        = useStore(selectRates);
+  const setActiveTab = useStore((s) => s.setActiveTab);
 
   const summary   = useMemo(() => computeMonthSummary(transactions, baseCurrency, rates), [transactions, baseCurrency, rates]);
   const invTotals = useMemo(() => computeInvestmentTotals(investments, baseCurrency, rates), [investments, baseCurrency, rates]);
-
-  // Round D: total liquid = sum of positive bucket balances
   const totalLiquid = useMemo(
     () => computeTotalLiquid(transactions, baseCurrency, rates),
     [transactions, baseCurrency, rates]
   );
-
-  const netWorth = useMemo(() => {
-    let liquid = 0;
-    for (const t of transactions) {
-      const v = convert(Math.abs(t.amount), t.currency || 'USD', baseCurrency, rates);
-      liquid += t.type === 'income' ? v : -v;
-    }
-    return liquid + invTotals.value - debt;
-  }, [transactions, invTotals.value, debt, baseCurrency, rates]);
 
   const series = useMemo(() => buildSeries(transactions, baseCurrency, rates, 30), [transactions, baseCurrency, rates]);
 
@@ -51,13 +48,12 @@ export default function Dashboard() {
     <main className="max-w-2xl mx-auto px-5 pt-4 pb-32">
       <PendingInbox />
 
-      {/* Round D: Available to spend HERO — top, eye-catching */}
-      <motion.section {...fadeUp} transition={{ duration: 0.5, ease }} className="mb-5">
+      {/* Available to spend HERO */}
+      <motion.section {...fadeUp} transition={{ duration: 0.5, ease }} className="mb-4">
         <div
           className="relative rounded-3xl p-6 overflow-hidden border"
           style={{
-            background:
-              'linear-gradient(135deg, rgba(61,139,95,0.18) 0%, rgba(212,169,66,0.12) 100%)',
+            background: 'linear-gradient(135deg, rgba(61,139,95,0.18) 0%, rgba(212,169,66,0.12) 100%)',
             borderColor: 'rgba(61,139,95,0.25)',
           }}
         >
@@ -84,15 +80,39 @@ export default function Dashboard() {
         </div>
       </motion.section>
 
+      {/* Borrowed capital pool — only render if non-zero */}
+      {borrowedPool > 0.005 && (
+        <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.04 }} className="mb-4">
+          <button
+            onClick={() => setActiveTab('investments')}
+            className="w-full text-left surface border rounded-2xl p-4 hover:bg-[var(--bg)] transition-colors"
+            style={{ borderColor: 'rgba(212,169,66,0.4)' }}
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                <HandCoins size={18} strokeWidth={2.25} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">
+                  Borrowed Capital
+                </div>
+                <div className="font-display text-2xl num">{formatMoney(borrowedPool, baseCurrency)}</div>
+                <div className="text-[11px] text-muted">Undeployed · not your cash · tap to deploy</div>
+              </div>
+            </div>
+          </button>
+        </motion.section>
+      )}
+
       {/* Net Worth — secondary */}
-      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.05 }} className="mb-5">
+      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.06 }} className="mb-5">
         <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1.5">Net Worth</div>
         <div className="flex items-baseline gap-2">
           <span className={`font-display text-4xl num leading-none ${netWorth < 0 ? 'text-accent-expense' : ''}`}>
             {formatMoney(netWorth, baseCurrency)}
           </span>
         </div>
-        <div className="mt-1.5 text-[11px] text-muted">Liquid + Investments − Debt</div>
+        <div className="mt-1.5 text-[11px] text-muted">Cash + Investments + Ventures + Receivables − Debts</div>
       </motion.section>
 
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.08 }}
@@ -106,7 +126,7 @@ export default function Dashboard() {
         <StatCard label="Total Debt"     value={debt}               tone={debt > 0 ? 'expense' : 'default'} icon={AlertCircle} currency={baseCurrency} />
       </motion.section>
 
-      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.1 }} className="mb-6">
+      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.1 }} className="mb-5">
         <div className="surface border rounded-2xl p-5">
           <div className="flex items-baseline justify-between mb-4">
             <div>
@@ -153,7 +173,12 @@ export default function Dashboard() {
         </div>
       </motion.section>
 
-      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.13 }} className="mb-6">
+      {/* Round E: BucketBars — per-bucket balance + recommended outflow */}
+      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.12 }} className="mb-5">
+        <BucketBars />
+      </motion.section>
+
+      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.14 }} className="mb-5">
         <SpendingBreakdown
           transactions={transactions}
           baseCurrency={baseCurrency}
@@ -161,7 +186,7 @@ export default function Dashboard() {
         />
       </motion.section>
 
-      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.15 }}>
+      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.16 }}>
         <TransactionHistory
           transactions={transactions}
           baseCurrency={baseCurrency}
@@ -235,7 +260,6 @@ function SpendingBreakdown({ transactions, baseCurrency, rates }) {
 function CategoryPie({ data, total, label, currency, tone }) {
   const isEmpty = data.length === 0;
   const toneClass = tone === 'income' ? 'text-accent-income' : 'text-accent-expense';
-
   return (
     <div className="bg-[var(--bg)] rounded-xl p-3">
       <div className="flex items-baseline justify-between mb-2">
@@ -244,7 +268,6 @@ function CategoryPie({ data, total, label, currency, tone }) {
           {tone === 'income' ? '+' : '−'}{formatCompact(total, currency)}
         </span>
       </div>
-
       {isEmpty ? (
         <div className="h-32 flex items-center justify-center text-[11px] text-muted">None</div>
       ) : (
@@ -255,9 +278,7 @@ function CategoryPie({ data, total, label, currency, tone }) {
                 <Pie data={data} dataKey="value" cx="50%" cy="50%"
                   innerRadius={32} outerRadius={56} paddingAngle={2}
                   isAnimationActive animationDuration={600} stroke="none">
-                  {data.map((_, i) => (
-                    <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                  ))}
+                  {data.map((_, i) => (<Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />))}
                 </Pie>
                 <Tooltip content={<PieTip currency={currency} total={total} />} />
               </PieChart>

@@ -1,41 +1,55 @@
-// src/modules/Debt.jsx
-import { useState, useMemo } from 'react';
+// src/modules/Debt.jsx — Round E
+import { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Trash2, Check, Info, HandCoins, ArrowDownLeft, ArrowUpRight } from 'lucide-react';
+import {
+  Trash2, Info, ArrowDownLeft, ArrowUpRight, Percent, TrendingUp, TrendingDown,
+  Briefcase, Rocket, Wallet as WalletIcon, Banknote, ChevronDown, ChevronUp,
+} from 'lucide-react';
 import {
   useStore,
   selectDebts, selectDebtEvents, selectTotalDebtInBase, selectTotalReceivableInBase,
-  selectBaseCurrency, selectRates,
-  computeDebtsWithStatus,
+  selectBaseCurrency, selectRates, selectBorrowedDeployments,
+  selectInvestments, selectVentures, selectVentureEvents, selectVentureDistributions,
+  computeDebtsWithStatus, computeDebtTrail,
 } from '../store/useStore';
-import { convert, formatMoney } from '../lib/currency';
+import { formatMoney, formatCompact } from '../lib/currency';
 import { fadeUp, ease } from '../lib/util';
 
-// Round D: Debt module is now VIEWER-ONLY.
-//
-// Recording new debts happens via QuickAdd with the special categories:
-//   • Borrowed (income) → creates a 'You owe' debt
-//   • Lent     (expense) → creates an 'Owed to you' debt
-//
-// This module shows both lists, the net position, and the repayment flow.
-//
+const DESTINATION_ICONS = {
+  investment: Briefcase,
+  venture:    Rocket,
+  bucket:     WalletIcon,
+  cash:       Banknote,
+};
+
 export default function DebtModule() {
-  const rawDebts     = useStore(selectDebts);
-  const debtEvents   = useStore(selectDebtEvents);
-  const totalOwe     = useStore(selectTotalDebtInBase);
+  const rawDebts        = useStore(selectDebts);
+  const debtEvents      = useStore(selectDebtEvents);
+  const totalOwe        = useStore(selectTotalDebtInBase);
   const totalReceivable = useStore(selectTotalReceivableInBase);
-  const baseCurrency = useStore(selectBaseCurrency);
-  const rates        = useStore(selectRates);
-  const removeDebt   = useStore((s) => s.removeDebt);
+  const baseCurrency    = useStore(selectBaseCurrency);
+  const rates           = useStore(selectRates);
+  const removeDebt      = useStore((s) => s.removeDebt);
+  const borrowedDeployments = useStore(selectBorrowedDeployments);
+  const investments     = useStore(selectInvestments);
+  const ventures        = useStore(selectVentures);
+  const ventureEvents   = useStore(selectVentureEvents);
+  const ventureDists    = useStore(selectVentureDistributions);
+
+  // Tick a counter every minute so accrued interest re-renders live
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   const allDebts = useMemo(
     () => computeDebtsWithStatus(rawDebts, debtEvents, baseCurrency, rates),
     [rawDebts, debtEvents, baseCurrency, rates]
   );
 
-  const owedDebts = useMemo(() => allDebts.filter((d) => d.direction === 'owe'), [allDebts]);
+  const owedDebts       = useMemo(() => allDebts.filter((d) => d.direction === 'owe'), [allDebts]);
   const receivableDebts = useMemo(() => allDebts.filter((d) => d.direction === 'receivable'), [allDebts]);
-
   const netPosition = totalReceivable - totalOwe;
   const hasAny = allDebts.length > 0;
 
@@ -46,7 +60,6 @@ export default function DebtModule() {
         <h1 className="font-display text-4xl">Position</h1>
       </motion.section>
 
-      {/* Net position hero */}
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.05 }}
         className={`surface border rounded-2xl p-5 mb-4 ${
           netPosition < 0 ? 'border-accent-expense/30' :
@@ -54,11 +67,6 @@ export default function DebtModule() {
         }`}>
         <div className="flex items-baseline justify-between mb-1">
           <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">Net position</div>
-          {!hasAny && (
-            <span className="inline-flex items-center gap-1 text-[11px] text-accent-income font-medium">
-              <Check size={12} /> Clean slate
-            </span>
-          )}
         </div>
         <div className={`font-display text-5xl num ${
           netPosition < 0 ? 'text-accent-expense' :
@@ -80,7 +88,6 @@ export default function DebtModule() {
         )}
       </motion.section>
 
-      {/* Help block — replaces the old add buttons */}
       <motion.div {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.08 }}
         className="rounded-2xl border border-dashed border-[var(--border)] p-4 mb-5 bg-[var(--bg)]">
         <div className="flex items-start gap-3">
@@ -91,15 +98,14 @@ export default function DebtModule() {
             <div className="text-[12px] font-medium mb-1">Recording new debts</div>
             <div className="text-[11px] text-muted leading-relaxed">
               Use the + button (QuickAdd) and pick category:
-              <br />• <span className="text-accent-income font-medium">Borrowed</span> (income) — money you took on loan, lands in Holding
-              <br />• <span className="text-accent-expense font-medium">Lent</span> (expense) — money you loaned out, debits a bucket
-              <br />Debt entries appear here automatically.
+              <br />• <span className="text-accent-income font-medium">Borrowed</span> (income) — money loaned to you (interest rate optional)
+              <br />• <span className="text-accent-expense font-medium">Lent</span> (expense) — money you loaned out
+              <br />Borrowed money lands in a separate pool — deploy from Wealth tab.
             </div>
           </div>
         </div>
       </motion.div>
 
-      {/* You owe section */}
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.1 }} className="mb-5">
         <div className="flex items-baseline justify-between mb-3 px-1">
           <div className="flex items-center gap-2">
@@ -119,15 +125,22 @@ export default function DebtModule() {
           <div className="space-y-3">
             <AnimatePresence>
               {owedDebts.map((d, idx) => (
-                <DebtRow key={d.id} debt={d} idx={idx} baseCurrency={baseCurrency} rates={rates}
-                  onDelete={() => removeDebt(d.id)} />
+                <DebtRow
+                  key={d.id} debt={d} idx={idx}
+                  baseCurrency={baseCurrency} rates={rates}
+                  borrowedDeployments={borrowedDeployments}
+                  investments={investments}
+                  ventures={ventures}
+                  ventureEvents={ventureEvents}
+                  ventureDistributions={ventureDists}
+                  onDelete={() => removeDebt(d.id)}
+                />
               ))}
             </AnimatePresence>
           </div>
         )}
       </motion.section>
 
-      {/* Owed to you section */}
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.13 }} className="mb-5">
         <div className="flex items-baseline justify-between mb-3 px-1">
           <div className="flex items-center gap-2">
@@ -147,8 +160,16 @@ export default function DebtModule() {
           <div className="space-y-3">
             <AnimatePresence>
               {receivableDebts.map((d, idx) => (
-                <DebtRow key={d.id} debt={d} idx={idx} baseCurrency={baseCurrency} rates={rates}
-                  onDelete={() => removeDebt(d.id)} />
+                <DebtRow
+                  key={d.id} debt={d} idx={idx}
+                  baseCurrency={baseCurrency} rates={rates}
+                  borrowedDeployments={borrowedDeployments}
+                  investments={investments}
+                  ventures={ventures}
+                  ventureEvents={ventureEvents}
+                  ventureDistributions={ventureDists}
+                  onDelete={() => removeDebt(d.id)}
+                />
               ))}
             </AnimatePresence>
           </div>
@@ -158,29 +179,50 @@ export default function DebtModule() {
   );
 }
 
-function DebtRow({ debt, idx, baseCurrency, rates, onDelete }) {
+function DebtRow({ debt, idx, baseCurrency, rates, borrowedDeployments, investments, ventures, ventureEvents, ventureDistributions, onDelete }) {
   const recordRepayment = useStore((s) => s.recordRepayment);
   const [paying, setPaying] = useState(false);
   const [amount, setAmount] = useState('');
+  const [interestPaid, setInterestPaid] = useState('');
   const [showHistory, setShowHistory] = useState(false);
+  const [showTrail, setShowTrail] = useState(false);
 
-  const { remaining, remainingBase, repaid, events = [], direction } = debt;
+  const { remaining, remainingBase, repaid, events = [], direction, interestRate, accruedInterest, projectedPayback } = debt;
   const pct = debt.principal > 0 ? repaid / debt.principal : 0;
   const isPaid = remaining <= 0;
   const isReceivable = direction === 'receivable';
+
+  // Round E: deployment trail (only for borrowed money — direction='owe')
+  const trail = useMemo(() => {
+    if (isReceivable) return [];
+    return computeDebtTrail(
+      debt, borrowedDeployments, investments, ventures, ventureEvents, ventureDistributions, baseCurrency, rates
+    );
+  }, [debt, isReceivable, borrowedDeployments, investments, ventures, ventureEvents, ventureDistributions, baseCurrency, rates]);
+
+  const deployedTotalBase = useMemo(
+    () => trail.reduce((sum, t) => sum + (Number(t.amountBase) || 0), 0),
+    [trail]
+  );
+  const trailRoiBase = useMemo(
+    () => trail.reduce((sum, t) => sum + (Number(t.roi) || 0), 0),
+    [trail]
+  );
 
   const submit = (e) => {
     e.preventDefault();
     const v = parseFloat(amount);
     if (!v || v <= 0) return;
-    recordRepayment(debt.id, v);
-    setAmount(''); setPaying(false);
+    const i = parseFloat(interestPaid) || 0;
+    recordRepayment(debt.id, v, { interestPaid: i });
+    setAmount(''); setInterestPaid(''); setPaying(false);
   };
 
   const dueText = debt.dueDate
     ? new Date(debt.dueDate).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' })
     : null;
   const isOverdue = debt.dueDate && new Date(debt.dueDate) < new Date() && !isPaid;
+  const hasInterest = (Number(interestRate) || 0) > 0;
 
   return (
     <motion.div
@@ -195,6 +237,11 @@ function DebtRow({ debt, idx, baseCurrency, rates, onDelete }) {
             <h3 className="font-medium truncate">{debt.creditor}</h3>
             {isPaid && <span className="text-[10px] px-2 py-0.5 rounded-full bg-accent-income/10 text-accent-income font-medium">{isReceivable ? 'COLLECTED' : 'PAID'}</span>}
             {isOverdue && <span className="text-[10px] px-2 py-0.5 rounded-full bg-accent-expense/10 text-accent-expense font-medium">OVERDUE</span>}
+            {hasInterest && (
+              <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400 font-medium">
+                <Percent size={9} />{interestRate}% {debt.interestType === 'compound' ? 'cmpd' : 'simp'}
+              </span>
+            )}
           </div>
           {debt.notes && <p className="text-[11px] text-muted mt-0.5 truncate">{debt.notes}</p>}
           {dueText && <p className="text-[11px] text-muted mt-0.5">Due {dueText}</p>}
@@ -226,6 +273,26 @@ function DebtRow({ debt, idx, baseCurrency, rates, onDelete }) {
           className="h-full bg-accent-income rounded-full" />
       </div>
 
+      {/* Round E: interest projection */}
+      {hasInterest && !isPaid && (
+        <div className="grid grid-cols-2 gap-2 mb-3 text-[11px]">
+          <div className="bg-[var(--bg)] rounded-lg px-3 py-2">
+            <div className="text-[9px] uppercase tracking-[0.1em] text-muted font-semibold">Accrued so far</div>
+            <div className="font-medium num text-amber-700 dark:text-amber-400">
+              {formatCompact(accruedInterest, debt.currency)}
+            </div>
+          </div>
+          <div className="bg-[var(--bg)] rounded-lg px-3 py-2">
+            <div className="text-[9px] uppercase tracking-[0.1em] text-muted font-semibold">
+              {debt.dueDate ? 'Projected at due' : 'Total payback'}
+            </div>
+            <div className="font-medium num">
+              {formatCompact(projectedPayback, debt.currency)}
+            </div>
+          </div>
+        </div>
+      )}
+
       {!isPaid && (
         <>
           <div className="flex gap-2">
@@ -246,12 +313,17 @@ function DebtRow({ debt, idx, baseCurrency, rates, onDelete }) {
                 initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
                 onSubmit={submit} className="overflow-hidden"
               >
-                <div className="pt-3 flex items-center gap-2">
+                <div className="pt-3 space-y-2">
                   <input type="number" step="0.01" max={remaining} value={amount} onChange={(e) => setAmount(e.target.value)}
-                    placeholder={`Amount (${debt.currency})`}
-                    className="flex-1 px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm num focus:ring-2 focus:ring-[var(--border)]" />
+                    placeholder={`Principal amount (${debt.currency})`}
+                    className="w-full px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm num focus:ring-2 focus:ring-[var(--border)]" />
+                  {hasInterest && (
+                    <input type="number" step="0.01" value={interestPaid} onChange={(e) => setInterestPaid(e.target.value)}
+                      placeholder={`Interest paid (${debt.currency}, optional)`}
+                      className="w-full px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm num focus:ring-2 focus:ring-[var(--border)]" />
+                  )}
                   <button type="submit" disabled={!amount || parseFloat(amount) <= 0}
-                    className="px-4 py-2 rounded-lg bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 text-sm font-medium disabled:opacity-40">
+                    className="w-full px-4 py-2 rounded-lg bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 text-sm font-medium disabled:opacity-40">
                     {isReceivable ? 'Receive' : 'Pay'}
                   </button>
                 </div>
@@ -259,6 +331,70 @@ function DebtRow({ debt, idx, baseCurrency, rates, onDelete }) {
             )}
           </AnimatePresence>
         </>
+      )}
+
+      {/* Round E: deployment trail viewer (borrowed money only) */}
+      {!isReceivable && trail.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-[var(--border)]">
+          <button
+            onClick={() => setShowTrail((v) => !v)}
+            className="w-full flex items-center justify-between gap-2 text-[11px] text-muted hover:text-[var(--text)] transition-colors"
+          >
+            <span className="flex items-center gap-1.5">
+              {showTrail ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+              Deployment trail · {trail.length} {trail.length === 1 ? 'item' : 'items'}
+            </span>
+            <span className={`num font-medium ${trailRoiBase >= 0 ? 'text-accent-income' : 'text-accent-expense'}`}>
+              {trailRoiBase >= 0 ? '+' : '−'}{formatCompact(Math.abs(trailRoiBase), baseCurrency)} ROI
+            </span>
+          </button>
+          <AnimatePresence>
+            {showTrail && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                className="overflow-hidden"
+              >
+                <div className="mt-3 space-y-2">
+                  <div className="text-[10px] text-muted px-1">
+                    Deployed {formatCompact(deployedTotalBase, baseCurrency)} of {formatCompact(debt.principal, debt.currency)}
+                  </div>
+                  {trail.map((t) => {
+                    const Icon = DESTINATION_ICONS[t.destinationType] || Banknote;
+                    const roiPositive = (t.roi || 0) >= 0;
+                    return (
+                      <div key={t.id} className="bg-[var(--bg)] rounded-lg p-3">
+                        <div className="flex items-center gap-2 mb-1">
+                          <div className="w-7 h-7 rounded-lg bg-[var(--surface)] flex items-center justify-center shrink-0">
+                            <Icon size={12} className="text-muted" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[12px] font-medium truncate">
+                              {t.destinationLabel || t.destinationType}
+                            </div>
+                            <div className="text-[10px] text-muted">
+                              {new Date(t.date).toLocaleDateString('en', { month: 'short', day: 'numeric' })}
+                              {t.note ? ` · ${t.note}` : ''}
+                            </div>
+                          </div>
+                          <div className={`text-right num text-[11px] font-medium ${roiPositive ? 'text-accent-income' : 'text-accent-expense'}`}>
+                            {roiPositive ? <TrendingUp size={11} className="inline" /> : <TrendingDown size={11} className="inline" />}
+                            {' '}{roiPositive ? '+' : '−'}{formatCompact(Math.abs(t.roi || 0), baseCurrency)}
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between text-[10px] num text-muted pl-9">
+                          <span>Deployed {formatMoney(t.amount, t.currency)}</span>
+                          <span>→ Now worth {formatCompact(t.currentValueBase, baseCurrency)}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
       )}
 
       {(isPaid || events.length > 0) && (showHistory || isPaid) && (
@@ -276,6 +412,9 @@ function DebtRow({ debt, idx, baseCurrency, rates, onDelete }) {
               </span>
               <div className="flex items-center gap-3">
                 <span className="text-accent-income">−{formatMoney(ev.amount, ev.currency)}</span>
+                {ev.interestPaid > 0 && (
+                  <span className="text-amber-700 dark:text-amber-400 text-[10px]">+{formatCompact(ev.interestPaid, ev.currency)} int.</span>
+                )}
                 <span className="text-muted">→ {formatMoney(ev.balanceAfter, ev.currency)} left</span>
               </div>
             </div>
