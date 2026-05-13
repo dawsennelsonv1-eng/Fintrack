@@ -1,19 +1,20 @@
-// src/components/QuickAdd.jsx
+// src/components/QuickAdd.jsx — Round E
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plus, X, ArrowDownLeft, ArrowUpRight, Repeat, Bookmark, Save,
-  ChevronDown, ChevronUp, Calendar, Hash, Tag, Users, Wallet,
+  ChevronDown, ChevronUp, Calendar, Hash, Tag, Users, Wallet, Percent, SlidersHorizontal,
 } from 'lucide-react';
 import {
   useStore, selectRates, selectBaseCurrency, selectEditingTxId, selectTransactions,
-  selectCategories, selectTemplates, selectBuckets, selectDebts,
-  gatherTags,
-  BORROWED_CATEGORY, LENT_CATEGORY, HOLDING_BUCKET_KEY,
+  selectCategories, selectTemplates, selectBuckets, selectDebts, selectGoals,
+  gatherTags, computeBucketImpact, buildCategoryToBucket,
+  BORROWED_CATEGORY, LENT_CATEGORY,
 } from '../store/useStore';
 import { CURRENCIES, formatMoney } from '../lib/currency';
 import DateTimePicker from './DateTimePicker';
 import TagInput from './TagInput';
+import SpendingWarning from './SpendingWarning';
 import * as Icons from 'lucide-react';
 
 const SECTIONS = [
@@ -33,10 +34,15 @@ export default function QuickAdd() {
   const [tags, setTags] = useState([]);
   const [date, setDate] = useState(() => new Date().toISOString());
 
-  // Round D: borrow/lend extras
+  // Round E: borrow/lend extras
   const [counterparty, setCounterparty] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [sourceBucketKey, setSourceBucketKey] = useState('operations');
+  const [interestRate, setInterestRate] = useState('');
+  const [interestType, setInterestType] = useState('simple');
+  // Advanced split (hidden by default for Lent)
+  const [advancedSplit, setAdvancedSplit] = useState(false);
+  const [bucketSplit, setBucketSplit] = useState({});
 
   // Foldable sections
   const [showDate, setShowDate] = useState(false);
@@ -54,6 +60,12 @@ export default function QuickAdd() {
   // Template-specific
   const [tplName, setTplName] = useState('');
 
+  // Round E: spending warning state
+  const [warningOpen, setWarningOpen] = useState(false);
+  const [pendingImpact, setPendingImpact] = useState(null);
+  const [pendingTxData, setPendingTxData] = useState(null);
+  const [pendingWarningBucket, setPendingWarningBucket] = useState(null);
+
   const addTransaction    = useStore((s) => s.addTransaction);
   const updateTransaction = useStore((s) => s.updateTransaction);
   const setEditingTx      = useStore((s) => s.setEditingTx);
@@ -67,11 +79,15 @@ export default function QuickAdd() {
   const templates  = useStore(selectTemplates);
   const buckets    = useStore(selectBuckets);
   const debts      = useStore(selectDebts);
+  const goals      = useStore(selectGoals);
+  const baseCurrency = useStore(selectBaseCurrency);
+  const rates      = useStore(selectRates);
 
   const editingTx = editingId ? transactions.find((t) => t.id === editingId) : null;
   const isEditing = !!editingTx;
 
   const allTags = useMemo(() => gatherTags(transactions), [transactions]);
+  const categoryMap = useMemo(() => buildCategoryToBucket(categories), [categories]);
 
   const availableCategories = useMemo(() => {
     return categories
@@ -79,15 +95,13 @@ export default function QuickAdd() {
       .sort((a, b) => a.order - b.order);
   }, [categories, type]);
 
-  // Round D: list of past creditors / counterparties for autocomplete
   const counterpartySuggestions = useMemo(() => {
     const seen = new Set();
     const out = [];
     for (const d of debts) {
       const c = (d.creditor || '').trim();
       if (c && !seen.has(c.toLowerCase())) {
-        seen.add(c.toLowerCase());
-        out.push(c);
+        seen.add(c.toLowerCase()); out.push(c);
       }
     }
     return out;
@@ -99,7 +113,6 @@ export default function QuickAdd() {
       .slice(0, 6);
   }, [templates]);
 
-  // Name autocomplete: search past transactions for matching notes
   const nameSuggestions = useMemo(() => {
     const q = notes.trim().toLowerCase();
     if (q.length < 2) return [];
@@ -112,11 +125,7 @@ export default function QuickAdd() {
       if (lower.startsWith(q) && lower !== q && !seen.has(lower)) {
         seen.add(lower);
         matches.push({
-          notes: n,
-          amount: t.amount,
-          currency: t.currency,
-          category: t.category,
-          type: t.type,
+          notes: n, amount: t.amount, currency: t.currency, category: t.category, type: t.type,
         });
         if (matches.length >= 5) break;
       }
@@ -124,7 +133,6 @@ export default function QuickAdd() {
     return matches;
   }, [notes, transactions]);
 
-  // Pick default category when type changes
   useEffect(() => {
     if (isEditing) return;
     if (availableCategories.length > 0 && !availableCategories.some((c) => c.name === category)) {
@@ -132,7 +140,6 @@ export default function QuickAdd() {
     }
   }, [type, availableCategories, isEditing]);
 
-  // Open in edit mode
   useEffect(() => {
     if (editingTx) {
       setOpen(true);
@@ -153,25 +160,25 @@ export default function QuickAdd() {
     setAmount('');
     setCurrency('USD');
     setCategory(availableCategories[0]?.name || '');
-    setNotes('');
-    setTags([]);
+    setNotes(''); setTags([]);
     setDate(new Date().toISOString());
-    setCounterparty('');
-    setDueDate('');
+    setCounterparty(''); setDueDate('');
     setSourceBucketKey('operations');
-    setShowDate(false);
-    setShowTags(false);
-    setRecFrequency('monthly');
-    setRecInterval(1);
-    setRecDayOfMonth(new Date().getDate());
-    setTplName('');
-    setShowSuggestions(false);
+    setInterestRate(''); setInterestType('simple');
+    setAdvancedSplit(false); setBucketSplit({});
+    setShowDate(false); setShowTags(false);
+    setRecFrequency('monthly'); setRecInterval(1); setRecDayOfMonth(new Date().getDate());
+    setTplName(''); setShowSuggestions(false);
   };
 
   const close = () => {
     setOpen(false);
     setEditingTx(null);
     setSection('quick');
+    setWarningOpen(false);
+    setPendingImpact(null);
+    setPendingTxData(null);
+    setPendingWarningBucket(null);
     setTimeout(reset, 250);
   };
 
@@ -196,66 +203,129 @@ export default function QuickAdd() {
     useTemplate?.(tpl.id);
   };
 
-  // Round D: detect special categories
   const isBorrowed = type === 'income'  && category === BORROWED_CATEGORY;
   const isLent     = type === 'expense' && category === LENT_CATEGORY;
   const isSpecial  = isBorrowed || isLent;
+
+  // Build the tx payload (used by both immediate save and confirmed-save-after-warning)
+  const buildTxData = () => {
+    const v = parseFloat(amount);
+    const data = {
+      type, amount: v, currency, category,
+      notes: notes.trim(),
+      tags: tags.filter(Boolean).join(','),
+      date,
+    };
+    if (isBorrowed) {
+      data.counterparty = counterparty.trim();
+      if (dueDate) data.dueDate = new Date(dueDate + 'T00:00:00').toISOString();
+      if (interestRate) {
+        data.interestRate = Number(interestRate);
+        data.interestType = interestType;
+      }
+    } else if (isLent) {
+      data.counterparty = counterparty.trim();
+      if (dueDate) data.dueDate = new Date(dueDate + 'T00:00:00').toISOString();
+      if (advancedSplit && Object.keys(bucketSplit).length > 0) {
+        // Filter out empty entries and ensure they sum (best-effort)
+        const cleaned = {};
+        for (const [k, val] of Object.entries(bucketSplit)) {
+          const n = Number(val) || 0;
+          if (n > 0) cleaned[k] = n;
+        }
+        data.bucketSplit = cleaned;
+      } else {
+        data.sourceBucketKey = sourceBucketKey;
+      }
+    }
+    return data;
+  };
+
+  // Determine the affected bucket for an expense (for SpendingWarning)
+  const expenseBucketKey = useMemo(() => {
+    if (type !== 'expense' || isLent) return null;
+    return categoryMap[category] || 'operations';
+  }, [type, isLent, category, categoryMap]);
+
+  const expenseBucket = useMemo(() => {
+    if (!expenseBucketKey) return null;
+    return buckets.find((b) => b.key === expenseBucketKey) || null;
+  }, [expenseBucketKey, buckets]);
 
   const submit = (e) => {
     e?.preventDefault?.();
     const v = parseFloat(amount);
     if (!v || v <= 0) return;
-
-    // Round D: enforce counterparty for borrow/lend
     if (isSpecial && !counterparty.trim()) return;
 
-    const tagsStr = tags.filter(Boolean).join(',');
-
-    if (section === 'quick') {
-      const data = {
-        type, amount: v, currency, category,
-        notes: notes.trim(), tags: tagsStr, date,
-      };
-      // Round D: pass borrow/lend extras
-      if (isBorrowed) {
-        data.counterparty = counterparty.trim();
-        if (dueDate) data.dueDate = new Date(dueDate + 'T00:00:00').toISOString();
-      } else if (isLent) {
-        data.counterparty = counterparty.trim();
-        data.sourceBucketKey = sourceBucketKey;
-        if (dueDate) data.dueDate = new Date(dueDate + 'T00:00:00').toISOString();
+    // Recurring + template paths never trigger the warning — they don't commit
+    // immediately. Edit path skips it too (too disruptive).
+    if (section !== 'quick' || isEditing) {
+      const data = buildTxData();
+      if (section === 'quick') {
+        if (isEditing) updateTransaction(editingId, data);
+        else addTransaction(data);
+      } else if (section === 'recurring') {
+        addRecurring({
+          name: notes.trim() || category,
+          amount: v, currency, type, category,
+          notes: notes.trim(), tags: tags.filter(Boolean).join(','),
+          frequency: recFrequency, interval: recInterval, dayOfMonth: recDayOfMonth,
+          startDate: date,
+        });
+      } else if (section === 'template') {
+        const tplDisplayName = tplName.trim() || notes.trim() || category;
+        addTemplate({
+          name: tplDisplayName, amount: v, currency, type, category,
+          notes: notes.trim(), tags: tags.filter(Boolean).join(','),
+          icon: 'Tag', color: '#7a8a8c',
+        });
       }
-      if (isEditing) updateTransaction(editingId, data);
-      else addTransaction(data);
-    } else if (section === 'recurring') {
-      addRecurring({
-        name: notes.trim() || category,
-        amount: v, currency, type, category,
-        notes: notes.trim(), tags: tagsStr,
-        frequency: recFrequency,
-        interval: recInterval,
-        dayOfMonth: recDayOfMonth,
-        startDate: date,
-      });
-    } else if (section === 'template') {
-      const tplDisplayName = tplName.trim() || notes.trim() || category;
-      addTemplate({
-        name: tplDisplayName,
-        amount: v, currency, type, category,
-        notes: notes.trim(), tags: tagsStr,
-        icon: 'Tag', color: '#7a8a8c',
-      });
+      close();
+      return;
     }
+
+    // Round E: check for goal-conflict warning on regular expenses
+    if (type === 'expense' && !isLent && expenseBucketKey) {
+      const hasActiveGoal = goals.some(
+        (g) => g.bucketKey === expenseBucketKey && g.status === 'active'
+      );
+      if (hasActiveGoal) {
+        const impact = computeBucketImpact(
+          transactions, goals, expenseBucketKey, v, currency, baseCurrency, rates
+        );
+        if (impact.affectedGoals.length > 0) {
+          setPendingImpact(impact);
+          setPendingTxData(buildTxData());
+          setPendingWarningBucket(expenseBucket);
+          setWarningOpen(true);
+          return;
+        }
+      }
+    }
+
+    addTransaction(buildTxData());
     close();
+  };
+
+  const confirmWarning = () => {
+    if (pendingTxData) addTransaction(pendingTxData);
+    close();
+  };
+
+  const cancelWarning = () => {
+    setWarningOpen(false);
+    setPendingImpact(null);
+    setPendingTxData(null);
+    setPendingWarningBucket(null);
   };
 
   const cfg = CURRENCIES[currency] || CURRENCIES.USD;
   const valid = amount && parseFloat(amount) > 0 && (!isSpecial || counterparty.trim().length > 0);
 
-  // Buckets available as Lent source (exclude Holding — can't lend from holding)
   const sourceBuckets = useMemo(() => {
     return buckets
-      .filter((b) => b.enabled !== false && b.key !== HOLDING_BUCKET_KEY)
+      .filter((b) => b.enabled !== false)
       .sort((a, b) => a.order - b.order);
   }, [buckets]);
 
@@ -278,7 +348,6 @@ export default function QuickAdd() {
             className="fixed inset-0 z-50 bg-[var(--bg)] overflow-y-auto no-scrollbar"
           >
             <div className="min-h-full max-w-2xl mx-auto pb-32">
-              {/* Sticky header */}
               <div className="sticky top-0 z-10 bg-[var(--bg)] pt-[env(safe-area-inset-top)] border-b border-[var(--border)]">
                 <div className="flex items-center justify-between px-5 py-3">
                   <div>
@@ -319,8 +388,6 @@ export default function QuickAdd() {
               </div>
 
               <div className="px-5 pt-5 space-y-5">
-
-                {/* Templates strip */}
                 {section === 'quick' && !isEditing && topTemplates.length > 0 && (
                   <div>
                     <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-2 px-1">
@@ -351,7 +418,6 @@ export default function QuickAdd() {
                   </div>
                 )}
 
-                {/* Type toggle */}
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button" onClick={() => setType('expense')}
@@ -375,15 +441,10 @@ export default function QuickAdd() {
                   </button>
                 </div>
 
-                {/* Big amount input */}
                 <div className="surface border rounded-2xl p-6">
-                  <div className="text-[10px] uppercase tracking-[0.14em] text-muted text-center mb-2">
-                    Amount
-                  </div>
+                  <div className="text-[10px] uppercase tracking-[0.14em] text-muted text-center mb-2">Amount</div>
                   <div className="flex items-baseline justify-center gap-1">
-                    {cfg.prefix && (
-                      <span className="font-display text-3xl text-muted">{cfg.prefix}</span>
-                    )}
+                    {cfg.prefix && (<span className="font-display text-3xl text-muted">{cfg.prefix}</span>)}
                     <input
                       type="number" inputMode="decimal" step="0.01" min="0"
                       value={amount} onChange={(e) => setAmount(e.target.value)}
@@ -392,11 +453,8 @@ export default function QuickAdd() {
                       className="bg-transparent outline-none font-display text-5xl text-center num min-w-[3ch] max-w-full"
                       style={{ width: `${Math.max(3, amount.length || 1)}ch` }}
                     />
-                    {cfg.suffix && (
-                      <span className="font-display text-2xl text-muted">{cfg.suffix}</span>
-                    )}
+                    {cfg.suffix && (<span className="font-display text-2xl text-muted">{cfg.suffix}</span>)}
                   </div>
-
                   <div className="grid grid-cols-3 gap-1 mt-4 p-1 rounded-xl bg-[var(--bg)]">
                     {Object.values(CURRENCIES).map((c) => {
                       const sel = currency === c.code;
@@ -414,7 +472,6 @@ export default function QuickAdd() {
                   </div>
                 </div>
 
-                {/* Name / notes */}
                 <div>
                   <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-2 px-1">
                     {section === 'recurring' ? 'Schedule name' : section === 'template' ? 'Description' : 'Name / description'}
@@ -456,11 +513,8 @@ export default function QuickAdd() {
                   </div>
                 </div>
 
-                {/* Category picker */}
                 <div>
-                  <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-2 px-1">
-                    Category
-                  </div>
+                  <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-2 px-1">Category</div>
                   <div className="grid grid-cols-3 gap-1.5">
                     {availableCategories.map((c) => {
                       const Icon = Icons[c.icon] || Tag;
@@ -490,7 +544,7 @@ export default function QuickAdd() {
                   </div>
                 </div>
 
-                {/* Round D: Borrow / Lend extra fields */}
+                {/* Round E: Borrow / Lend extra fields */}
                 <AnimatePresence>
                   {isSpecial && section === 'quick' && (
                     <motion.div
@@ -513,15 +567,12 @@ export default function QuickAdd() {
                           </div>
                         </div>
 
-                        {/* Counterparty (required) */}
                         <div>
                           <label className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1.5 block px-1">
                             {isBorrowed ? 'From whom' : 'To whom'} <span className="text-accent-expense">*</span>
                           </label>
                           <input
-                            type="text"
-                            value={counterparty}
-                            onChange={(e) => setCounterparty(e.target.value)}
+                            type="text" value={counterparty} onChange={(e) => setCounterparty(e.target.value)}
                             placeholder={isBorrowed ? 'Who lent you this?' : 'Who is borrowing?'}
                             list="counterparty-list"
                             className="w-full px-4 py-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] outline-none text-sm focus:ring-2 focus:ring-[var(--text)]/10"
@@ -533,8 +584,41 @@ export default function QuickAdd() {
                           </datalist>
                         </div>
 
-                        {/* Source bucket (Lent only) */}
-                        {isLent && (
+                        {isBorrowed && (
+                          <div>
+                            <label className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1.5 flex items-center gap-1 px-1">
+                              <Percent size={11} /> Interest rate <span className="opacity-60 normal-case tracking-normal">(annual %, optional)</span>
+                            </label>
+                            <div className="grid grid-cols-[1fr_auto] gap-2">
+                              <input
+                                type="number" inputMode="decimal" step="0.01" min="0"
+                                value={interestRate} onChange={(e) => setInterestRate(e.target.value)}
+                                placeholder="0"
+                                className="w-full px-4 py-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] outline-none text-sm num focus:ring-2 focus:ring-[var(--text)]/10"
+                              />
+                              <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-[var(--bg)] border border-[var(--border)]">
+                                {[
+                                  { id: 'simple',   label: 'Simple' },
+                                  { id: 'compound', label: 'Compound' },
+                                ].map((m) => {
+                                  const sel = interestType === m.id;
+                                  return (
+                                    <button
+                                      key={m.id} type="button" onClick={() => setInterestType(m.id)}
+                                      className={`px-3 rounded-lg text-[11px] font-medium ${
+                                        sel ? 'bg-[var(--surface)] shadow-sm' : 'text-muted'
+                                      }`}
+                                    >
+                                      {m.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {isLent && !advancedSplit && (
                           <div>
                             <label className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1.5 flex items-center gap-1 px-1">
                               <Wallet size={11} /> From which bucket
@@ -544,17 +628,14 @@ export default function QuickAdd() {
                                 const sel = sourceBucketKey === b.key;
                                 return (
                                   <button
-                                    key={b.id}
-                                    type="button"
-                                    onClick={() => setSourceBucketKey(b.key)}
+                                    key={b.id} type="button" onClick={() => setSourceBucketKey(b.key)}
                                     className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border text-left transition-all ${
                                       sel
                                         ? 'bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 border-transparent'
                                         : 'bg-[var(--bg)] border-[var(--border)]'
                                     }`}
                                   >
-                                    <span className="w-2 h-2 rounded-full shrink-0"
-                                      style={{ backgroundColor: b.color }} />
+                                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: b.color }} />
                                     <span className="text-[11px] font-medium truncate">{b.name}</span>
                                   </button>
                                 );
@@ -563,30 +644,60 @@ export default function QuickAdd() {
                           </div>
                         )}
 
-                        {/* Due date (optional) */}
+                        {isLent && advancedSplit && (
+                          <div>
+                            <label className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1.5 flex items-center gap-1 px-1">
+                              <SlidersHorizontal size={11} /> Split across buckets
+                            </label>
+                            <div className="space-y-2">
+                              {sourceBuckets.map((b) => (
+                                <div key={b.id} className="flex items-center gap-2">
+                                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: b.color }} />
+                                  <span className="text-[12px] flex-1 truncate">{b.name}</span>
+                                  <input
+                                    type="number" inputMode="decimal" step="0.01" min="0"
+                                    value={bucketSplit[b.key] || ''}
+                                    onChange={(e) => setBucketSplit({ ...bucketSplit, [b.key]: e.target.value })}
+                                    placeholder="0"
+                                    className="w-24 px-2 py-1.5 rounded-lg bg-[var(--bg)] border border-[var(--border)] outline-none text-xs num text-right"
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {isLent && (
+                          <button
+                            type="button"
+                            onClick={() => setAdvancedSplit((v) => !v)}
+                            className="text-[10px] text-muted hover:text-[var(--text)] flex items-center gap-1 px-1"
+                          >
+                            <SlidersHorizontal size={10} />
+                            {advancedSplit ? 'Use single bucket' : 'Advanced: split across buckets'}
+                          </button>
+                        )}
+
                         <div>
                           <label className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1.5 flex items-center gap-1 px-1">
                             <Calendar size={11} /> Due date <span className="opacity-60 normal-case tracking-normal">(optional)</span>
                           </label>
                           <input
-                            type="date"
-                            value={dueDate}
-                            onChange={(e) => setDueDate(e.target.value)}
+                            type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)}
                             className="w-full px-4 py-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] outline-none text-sm num focus:ring-2 focus:ring-[var(--text)]/10"
                           />
                         </div>
 
                         <p className="text-[10px] text-muted px-1">
                           {isBorrowed
-                            ? 'This will land in your Holding bucket (no auto-split) and create a debt entry in the Debt tab.'
-                            : 'This will debit your chosen bucket and create a receivable entry in the Debt tab.'}
+                            ? 'This will appear as Borrowed Capital on Home — separate from your cash. Deploy it into investments or ventures from the Wealth tab.'
+                            : 'Money leaves your bucket and an entry appears in the Debt tab under Owed to you.'}
                         </p>
                       </div>
                     </motion.div>
                   )}
                 </AnimatePresence>
 
-                {/* Recurring fields */}
                 {section === 'recurring' && (
                   <RecurringFields
                     frequency={recFrequency} setFrequency={setRecFrequency}
@@ -595,12 +706,9 @@ export default function QuickAdd() {
                   />
                 )}
 
-                {/* Template name */}
                 {section === 'template' && (
                   <div>
-                    <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-2 px-1">
-                      Template name
-                    </div>
+                    <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-2 px-1">Template name</div>
                     <input
                       type="text" value={tplName} onChange={(e) => setTplName(e.target.value)}
                       placeholder="e.g., Morning coffee"
@@ -609,7 +717,6 @@ export default function QuickAdd() {
                   </div>
                 )}
 
-                {/* Foldable: Date */}
                 <FoldableSection
                   icon={Calendar}
                   label={section === 'recurring' ? 'Start date' : 'Date'}
@@ -620,7 +727,6 @@ export default function QuickAdd() {
                   <DateTimePicker value={date} onChange={setDate} />
                 </FoldableSection>
 
-                {/* Foldable: Tags */}
                 {section !== 'recurring' && (
                   <FoldableSection
                     icon={Hash}
@@ -634,7 +740,6 @@ export default function QuickAdd() {
                 )}
               </div>
 
-              {/* Sticky footer */}
               <div className="fixed bottom-0 left-0 right-0 z-20 bg-[var(--bg)] border-t border-[var(--border)] pb-[env(safe-area-inset-bottom)]">
                 <div className="max-w-2xl mx-auto px-5 py-3">
                   <button
@@ -657,6 +762,18 @@ export default function QuickAdd() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Round E: SpendingWarning overlay */}
+      <SpendingWarning
+        open={warningOpen}
+        impact={pendingImpact}
+        pendingTx={pendingTxData}
+        bucketName={pendingWarningBucket?.name}
+        bucketColor={pendingWarningBucket?.color}
+        baseCurrency={baseCurrency}
+        onConfirm={confirmWarning}
+        onCancel={cancelWarning}
+      />
     </>
   );
 }
@@ -683,9 +800,7 @@ function FoldableSection({ icon: Icon, label, preview, open, onToggle, children 
             exit={{ height: 0, opacity: 0 }}
             className="overflow-hidden"
           >
-            <div className="p-4 border-t border-[var(--border)]">
-              {children}
-            </div>
+            <div className="p-4 border-t border-[var(--border)]">{children}</div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -702,9 +817,7 @@ function RecurringFields({ frequency, setFrequency, interval, setInterval, dayOf
   ];
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-2 px-1">
-        Frequency
-      </div>
+      <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-2 px-1">Frequency</div>
       <div className="grid grid-cols-4 gap-1.5">
         {FREQS.map((f) => {
           const sel = frequency === f.id;
@@ -725,8 +838,8 @@ function RecurringFields({ frequency, setFrequency, interval, setInterval, dayOf
         <div className="mt-3 surface border rounded-xl px-4 py-3 flex items-center justify-between">
           <span className="text-[12px] text-muted">Day of month</span>
           <input
-            type="number" min="1" max="28"
-            value={dayOfMonth} onChange={(e) => setDayOfMonth(parseInt(e.target.value) || 1)}
+            type="number" min="1" max="28" value={dayOfMonth}
+            onChange={(e) => setDayOfMonth(parseInt(e.target.value) || 1)}
             className="w-16 bg-[var(--bg)] outline-none rounded-md px-2 py-1 num text-right text-sm"
           />
         </div>
@@ -742,7 +855,6 @@ function formatDatePreview(iso) {
   const sameDay = d.toDateString() === now.toDateString();
   const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
   const isYesterday = d.toDateString() === yesterday.toDateString();
-
   const time = d.toLocaleTimeString('en', { hour: 'numeric', minute: '2-digit' });
   if (sameDay) return `Today, ${time}`;
   if (isYesterday) return `Yesterday, ${time}`;
