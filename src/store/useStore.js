@@ -1,4 +1,17 @@
-// src/store/useStore.js
+// src/store/useStore.js — Round E
+//
+// Changes from Round D:
+//   • HOLDING BUCKET KILLED. Migration drops it. Any allocations move to Operations.
+//   • Borrowed money now lives in a SEPARATE POOL (s.personal.borrowedPool), not in buckets.
+//     It does NOT count toward "Available to spend" or net worth (offset by the debt).
+//   • DEPLOYMENT TRAIL: every borrowed-pool spend logs a borrowedDeployment row tying
+//     the dollar back to the source debt and to where it ended up (investment / venture / bucket / cash).
+//   • INTEREST RATE on debts (annual %). Live accrual + projected total payback.
+//   • VENTURES REWRITE: type, dates, valuation, milestones, distributions, journal.
+//   • computeBucketImpact() for the spending-warning overlay.
+//   • Net worth math: cash buckets + investments value + ventures value + receivables − debts(owe).
+//     Borrowed pool not counted.
+//
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { api, ApiError } from '../lib/api';
@@ -21,48 +34,34 @@ function enqueue(set, get, entity, action, payload) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// CONSTANTS — Round D
+// CONSTANTS
 // ════════════════════════════════════════════════════════════════════
-//
-// These two category names trigger special behavior in addTransaction:
-//
-//   BORROWED (income type)
-//     - Money borrowed from someone (you now owe them)
-//     - Routes 100% to the Holding bucket — no auto-split into goal buckets
-//     - Auto-creates a debt row with direction='owe'
-//
-//   LENT (expense type)
-//     - Money loaned out to someone (they now owe you)
-//     - Debits from a source bucket the user picks at log time
-//     - Auto-creates a debt row with direction='receivable'
-//
-// Both categories require a counterparty (from-whom / to-whom). The
-// Borrowed flow optionally accepts a due date.
-//
 export const BORROWED_CATEGORY = 'Borrowed';
 export const LENT_CATEGORY     = 'Lent';
-export const HOLDING_BUCKET_KEY = 'holding';
+
+// Venture types — used by the Investments module
+export const VENTURE_TYPES = [
+  { id: 'business',    label: 'Other Business' },
+  { id: 'partnership', label: 'Partnership' },
+  { id: 'equity',      label: 'Equity Stake' },
+  { id: 'sideHustle',  label: 'Side Hustle' },
+  { id: 'investing',   label: 'Investing in Other' }, // 2x play / silent backer
+  { id: 'other',       label: 'Other' },
+];
 
 // ════════════════════════════════════════════════════════════════════
-// DEFAULT BUCKETS — Round D adds Holding
+// DEFAULT BUCKETS — Round E: Holding KILLED
 // ════════════════════════════════════════════════════════════════════
-//
-// "Holding" is a capital bucket. It does NOT participate in auto-split
-// (its percentage is 0) and exists to hold un-allocated funds like
-// borrowed money before deployment.
-//
 export const DEFAULT_BUCKETS = [
   { key: 'warChest',   name: 'War Chest',          percentage: 50, color: '#d4a942', icon: 'TrendingUp', order: 1 },
   { key: 'operations', name: 'Operations',         percentage: 30, color: '#3d8b5f', icon: 'Wallet',     order: 2 },
   { key: 'reserve',    name: 'Reserve & Friction', percentage: 10, color: '#5b8def', icon: 'Shield',     order: 3 },
   { key: 'giving',     name: 'Giving',             percentage: 5,  color: '#e07a5f', icon: 'Heart',      order: 4 },
   { key: 'baller',     name: 'Baller',             percentage: 5,  color: '#9b59b6', icon: 'Sparkles',   order: 5 },
-  // Holding — un-allocated capital, never receives auto-split
-  { key: HOLDING_BUCKET_KEY, name: 'Holding', percentage: 0, color: '#7a8a8c', icon: 'Archive', order: 6 },
 ];
 
 // ════════════════════════════════════════════════════════════════════
-// DEFAULT CATEGORIES — Round D adds Borrowed and Lent
+// DEFAULT CATEGORIES
 // ════════════════════════════════════════════════════════════════════
 export const DEFAULT_CATEGORIES = [
   // Expenses
@@ -76,7 +75,6 @@ export const DEFAULT_CATEGORIES = [
   { name: 'Investment',     type: 'expense', icon: 'TrendingUp',      color: '#d4a942', bucketKey: 'warChest',   order: 8 },
   { name: 'Entertainment',  type: 'expense', icon: 'Sparkles',        color: '#9b59b6', bucketKey: 'baller',     order: 9 },
   { name: 'Gift',           type: 'expense', icon: 'Gift',            color: '#e07a5f', bucketKey: 'giving',     order: 10 },
-  // Round D: lending out money to someone = expense
   { name: LENT_CATEGORY,    type: 'expense', icon: 'HandCoins',       color: '#5b8def', bucketKey: 'operations', order: 11 },
   { name: 'Other',          type: 'expense', icon: 'MoreHorizontal',  color: '#7a8a8c', bucketKey: 'operations', order: 99 },
   // Income
@@ -84,8 +82,7 @@ export const DEFAULT_CATEGORIES = [
   { name: 'Freelance',      type: 'income',  icon: 'Laptop',          color: '#3d8b5f', bucketKey: '', order: 2 },
   { name: 'Investment',     type: 'income',  icon: 'TrendingUp',      color: '#d4a942', bucketKey: '', order: 3 },
   { name: 'Gift',           type: 'income',  icon: 'Gift',            color: '#e07a5f', bucketKey: '', order: 4 },
-  // Round D: borrowing from someone = income (capital injection)
-  { name: BORROWED_CATEGORY, type: 'income', icon: 'HandCoins',       color: '#d4a942', bucketKey: HOLDING_BUCKET_KEY, order: 5 },
+  { name: BORROWED_CATEGORY, type: 'income', icon: 'HandCoins',       color: '#d4a942', bucketKey: '', order: 5 },
   { name: 'Other',          type: 'income',  icon: 'MoreHorizontal',  color: '#7a8a8c', bucketKey: '', order: 99 },
 ];
 
@@ -100,15 +97,13 @@ export const CATEGORY_TO_BUCKET = {
   'Investment':     'warChest',
   'Entertainment':  'baller',
   'Gift':           'giving',
-  [LENT_CATEGORY]:  'operations', // default source if user doesn't pick
+  [LENT_CATEGORY]:  'operations',
   'Other':          'operations',
   'Salary':         null,
   'Freelance':      null,
-  [BORROWED_CATEGORY]: null, // handled specially — goes to Holding
+  [BORROWED_CATEGORY]: null, // routed to borrowedPool, not buckets
 };
 
-// Build runtime category-to-bucket map from user's custom categories,
-// falling back to defaults
 export function buildCategoryToBucket(categories) {
   const map = { ...CATEGORY_TO_BUCKET };
   for (const c of categories) {
@@ -117,12 +112,9 @@ export function buildCategoryToBucket(categories) {
   return map;
 }
 
-// Round D: income auto-split now EXCLUDES the Holding bucket. Holding
-// only receives money when explicitly routed (e.g., Borrowed category).
 export function autoSplitIncome(amount, buckets) {
   const enabled = buckets
     .filter((b) => b.enabled !== false)
-    .filter((b) => b.key !== HOLDING_BUCKET_KEY)
     .sort((a, b) => a.order - b.order);
   const totalPct = enabled.reduce((sum, b) => sum + b.percentage, 0);
   if (totalPct === 0) return {};
@@ -146,7 +138,46 @@ export function autoSplitExpense(amount, category, categoryMap = CATEGORY_TO_BUC
 }
 
 // ════════════════════════════════════════════════════════════════════
-// RECURRING ENGINE — compute next due date based on frequency
+// INTEREST math
+// ════════════════════════════════════════════════════════════════════
+//
+// Simple interest:   total = principal × (1 + rate × yearsElapsed)
+// Compound (annual): total = principal × (1 + rate)^yearsElapsed
+//
+// rate is a decimal (5% → 0.05), stored as % integer/float in the field.
+// Returns total accrued INTEREST (not principal + interest).
+//
+export function computeAccruedInterest(debt, asOf = new Date()) {
+  const rate = (Number(debt.interestRate) || 0) / 100;
+  if (rate <= 0) return 0;
+  const start = new Date(debt.createdAt || asOf);
+  const end = new Date(asOf);
+  if (end <= start) return 0;
+  const yearsElapsed = (end - start) / (365.25 * 24 * 60 * 60 * 1000);
+  const type = debt.interestType || 'simple';
+  const p = Number(debt.principal) || 0;
+  if (type === 'compound') {
+    return p * Math.pow(1 + rate, yearsElapsed) - p;
+  }
+  return p * rate * yearsElapsed;
+}
+
+// Total projected payback at due date (or asOf if no due date)
+export function computeProjectedPayback(debt) {
+  const rate = (Number(debt.interestRate) || 0) / 100;
+  const p = Number(debt.principal) || 0;
+  if (rate <= 0) return p;
+  const start = new Date(debt.createdAt || new Date());
+  const end = debt.dueDate ? new Date(debt.dueDate) : new Date();
+  if (end <= start) return p;
+  const yearsElapsed = (end - start) / (365.25 * 24 * 60 * 60 * 1000);
+  const type = debt.interestType || 'simple';
+  if (type === 'compound') return p * Math.pow(1 + rate, yearsElapsed);
+  return p * (1 + rate * yearsElapsed);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// RECURRING ENGINE
 // ════════════════════════════════════════════════════════════════════
 export function computeNextDueAt(recurring, fromDate = new Date()) {
   const from = new Date(fromDate);
@@ -297,6 +328,11 @@ const personalSlice = (set, get) => ({
     pending:          [],
     templates:        [],
     categories:       [],
+    // Round E new collections
+    borrowedDeployments:   [],
+    ventureDistributions:  [],
+    ventureMilestones:     [],
+    ventureJournal:        [],
     queue: [],
     lastSyncAt: null,
     lastTickAt: null,
@@ -306,75 +342,53 @@ const personalSlice = (set, get) => ({
     lastDeleted: null,
   },
 
-  // Round D: initializeBuckets now MIGRATES existing stores too — if the
-  // user has buckets but is missing Holding, add it without wiping.
+  // Round E: ensure default buckets exist; ALSO migrate-kill any "holding" bucket
   initializeBuckets: () => {
     const existing = get().personal.buckets;
     if (existing.length === 0) {
       const newBuckets = DEFAULT_BUCKETS.map((b) => ({
-        ...b,
-        id: uid('bkt'),
-        enabled: true,
-        createdAt: nowISO(),
-        updatedAt: nowISO(),
+        ...b, id: uid('bkt'), enabled: true, createdAt: nowISO(), updatedAt: nowISO(),
       }));
       set((s) => ({ personal: { ...s.personal, buckets: newBuckets } }));
       newBuckets.forEach((b) => enqueue(set, get, 'bucket', 'create', b));
       return;
     }
-    // Migration: add Holding bucket if missing
-    if (!existing.some((b) => b.key === HOLDING_BUCKET_KEY)) {
-      const holding = {
-        ...DEFAULT_BUCKETS.find((b) => b.key === HOLDING_BUCKET_KEY),
-        id: uid('bkt'),
-        enabled: true,
-        order: Math.max(...existing.map((b) => b.order || 0)) + 1,
-        createdAt: nowISO(),
-        updatedAt: nowISO(),
-      };
-      set((s) => ({ personal: { ...s.personal, buckets: [...s.personal.buckets, holding] } }));
-      enqueue(set, get, 'bucket', 'create', holding);
+    // Kill any Holding bucket left from Round D
+    const holding = existing.find((b) => b.key === 'holding');
+    if (holding) {
+      set((s) => ({
+        personal: { ...s.personal, buckets: s.personal.buckets.filter((b) => b.key !== 'holding') },
+      }));
+      enqueue(set, get, 'bucket', 'delete', { id: holding.id });
     }
   },
 
-  // Round D: initializeCategories also migrates — adds Borrowed/Lent if
-  // they're not present.
   initializeCategories: () => {
     const existing = get().personal.categories;
     if (existing.length === 0) {
       const newCats = DEFAULT_CATEGORIES.map((c) => ({
-        ...c,
-        id: uid('cat'),
-        enabled: true,
-        createdAt: nowISO(),
-        updatedAt: nowISO(),
+        ...c, id: uid('cat'), enabled: true, createdAt: nowISO(), updatedAt: nowISO(),
       }));
       set((s) => ({ personal: { ...s.personal, categories: newCats } }));
       newCats.forEach((c) => enqueue(set, get, 'category', 'create', c));
       return;
     }
-    // Migration: add Borrowed/Lent if missing
+    // Add Borrowed/Lent if missing
     const toAdd = [];
     if (!existing.some((c) => c.name === BORROWED_CATEGORY && c.type === 'income')) {
       const tpl = DEFAULT_CATEGORIES.find((c) => c.name === BORROWED_CATEGORY);
       toAdd.push({
-        ...tpl,
-        id: uid('cat'),
-        enabled: true,
+        ...tpl, id: uid('cat'), enabled: true,
         order: Math.max(...existing.filter((c) => c.type === 'income').map((c) => c.order || 0), 0) + 1,
-        createdAt: nowISO(),
-        updatedAt: nowISO(),
+        createdAt: nowISO(), updatedAt: nowISO(),
       });
     }
     if (!existing.some((c) => c.name === LENT_CATEGORY && c.type === 'expense')) {
       const tpl = DEFAULT_CATEGORIES.find((c) => c.name === LENT_CATEGORY);
       toAdd.push({
-        ...tpl,
-        id: uid('cat'),
-        enabled: true,
+        ...tpl, id: uid('cat'), enabled: true,
         order: Math.max(...existing.filter((c) => c.type === 'expense').map((c) => c.order || 0), 0) + 1,
-        createdAt: nowISO(),
-        updatedAt: nowISO(),
+        createdAt: nowISO(), updatedAt: nowISO(),
       });
     }
     if (toAdd.length > 0) {
@@ -385,17 +399,14 @@ const personalSlice = (set, get) => ({
 
   // ─── Transactions ─────────────────────────────────────────
   //
-  // Round D: addTransaction now detects Borrowed (income) and Lent
-  // (expense) categories and:
-  //   1) routes money to the correct bucket (Holding for Borrowed,
-  //      user-picked source bucket for Lent — defaults to Operations)
-  //   2) auto-creates a linked debt row with the right direction
-  //   3) stores linkedDebtId on the transaction so deletion cascades
+  // Round E: Borrowed money does NOT route through buckets. It lives
+  // in a separate pool tracked by the linked debt. The transaction's
+  // buckets field is `{}` for borrowed inflows. The Debt entry's
+  // remaining principal represents the borrowed-pool balance from
+  // that source (minus deployments).
   //
-  // Extra input fields supported for these categories:
-  //   counterparty:    string  (required for both)
-  //   dueDate:         ISO date string (optional, Borrowed only typically)
-  //   sourceBucketKey: bucket key (Lent only — where the money comes from)
+  // Lent money: by default debits one chosen source bucket. Advanced
+  // mode allows splitting across buckets (input.bucketSplit object).
   //
   addTransaction: (input) => {
     const buckets = get().personal.buckets;
@@ -408,12 +419,19 @@ const personalSlice = (set, get) => ({
     let bucketAllocation = input.buckets;
     if (!bucketAllocation) {
       if (isBorrowed) {
-        // All borrowed money lands in Holding — no auto-split
-        bucketAllocation = { [HOLDING_BUCKET_KEY]: Number(input.amount) };
+        // Borrowed money lives in its own pool, NOT in buckets
+        bucketAllocation = {};
       } else if (isLent) {
-        // Debit from user-chosen source bucket (default Operations)
-        const sourceKey = input.sourceBucketKey || 'operations';
-        bucketAllocation = { [sourceKey]: -Math.abs(Number(input.amount)) };
+        if (input.bucketSplit && typeof input.bucketSplit === 'object') {
+          // Advanced: user-defined split across multiple buckets (negative values)
+          bucketAllocation = {};
+          for (const [k, v] of Object.entries(input.bucketSplit)) {
+            bucketAllocation[k] = -Math.abs(Number(v) || 0);
+          }
+        } else {
+          const sourceKey = input.sourceBucketKey || 'operations';
+          bucketAllocation = { [sourceKey]: -Math.abs(Number(input.amount)) };
+        }
       } else if (input.type === 'income') {
         bucketAllocation = autoSplitIncome(Number(input.amount), buckets);
       } else if (input.type === 'expense') {
@@ -423,14 +441,13 @@ const personalSlice = (set, get) => ({
       }
     }
 
-    // Normalize tags: array → comma-separated string for storage
     let tagsStr = '';
     if (Array.isArray(input.tags)) tagsStr = input.tags.filter(Boolean).join(',');
     else if (typeof input.tags === 'string') tagsStr = input.tags;
 
     const txId = input.id || uid('tx');
 
-    // Round D: auto-create linked debt for Borrowed/Lent
+    // Auto-create linked debt for Borrowed/Lent
     let linkedDebtId = '';
     if ((isBorrowed || isLent) && input.counterparty) {
       const direction = isBorrowed ? 'owe' : 'receivable';
@@ -443,6 +460,8 @@ const personalSlice = (set, get) => ({
         notes: input.notes || '',
         status: 'active',
         direction,
+        interestRate: Number(input.interestRate) || 0,
+        interestType: input.interestType || 'simple',
         linkedTxId: txId,
         createdAt: nowISO(),
         updatedAt: nowISO(),
@@ -462,7 +481,7 @@ const personalSlice = (set, get) => ({
       notes: input.notes || '',
       tags: tagsStr,
       buckets: bucketAllocation,
-      linkedDebtId, // empty string if not borrow/lend
+      linkedDebtId,
       createdAt: nowISO(),
       updatedAt: nowISO(),
       _pending: true,
@@ -493,11 +512,10 @@ const personalSlice = (set, get) => ({
             patch.type !== undefined ||
             patch.category !== undefined
           )) {
-            // Re-route allocations on the same Round D rules
             const isBorrowedNow = newType === 'income'  && newCategory === BORROWED_CATEGORY;
             const isLentNow     = newType === 'expense' && newCategory === LENT_CATEGORY;
             if (isBorrowedNow) {
-              newBuckets = { [HOLDING_BUCKET_KEY]: newAmount };
+              newBuckets = {};
             } else if (isLentNow) {
               const sourceKey = patch.sourceBucketKey || 'operations';
               newBuckets = { [sourceKey]: -Math.abs(newAmount) };
@@ -531,11 +549,9 @@ const personalSlice = (set, get) => ({
     return updated;
   },
 
-  // Round D: also delete the linked debt if there is one.
   deleteTransaction: (id) => {
     const tx = get().personal.transactions.find((t) => t.id === id);
 
-    // Goal un-claim logic (preserved from previous round)
     let unclaimedGoal = null;
     if (tx && tx.category === 'Goal' && typeof tx.notes === 'string' && tx.notes.startsWith('🎯')) {
       const goalName = tx.notes.replace(/^🎯\s*/, '').trim();
@@ -544,16 +560,11 @@ const personalSlice = (set, get) => ({
       );
       if (linkedGoal) {
         unclaimedGoal = {
-          ...linkedGoal,
-          status: 'active',
-          claimedAt: '',
-          claimedAmount: 0,
-          updatedAt: nowISO(),
+          ...linkedGoal, status: 'active', claimedAt: '', claimedAmount: 0, updatedAt: nowISO(),
         };
       }
     }
 
-    // Round D: find linked debt for cascade delete
     let linkedDebt = null;
     if (tx && tx.linkedDebtId) {
       linkedDebt = get().personal.debts.find((d) => d.id === tx.linkedDebtId);
@@ -587,18 +598,11 @@ const personalSlice = (set, get) => ({
     let reclaimed = null;
     if (last.unclaimedGoal) {
       reclaimed = {
-        ...last.unclaimedGoal,
-        status: 'claimed',
-        claimedAt: tx.date || nowISO(),
-        claimedAmount: tx.amount,
-        updatedAt: nowISO(),
+        ...last.unclaimedGoal, status: 'claimed',
+        claimedAt: tx.date || nowISO(), claimedAmount: tx.amount, updatedAt: nowISO(),
       };
     }
-
-    // Round D: restore linked debt too
-    const restoredDebt = last.linkedDebt
-      ? { ...last.linkedDebt, updatedAt: nowISO() }
-      : null;
+    const restoredDebt = last.linkedDebt ? { ...last.linkedDebt, updatedAt: nowISO() } : null;
 
     set((s) => ({
       personal: {
@@ -769,8 +773,7 @@ const personalSlice = (set, get) => ({
       lastFiredAt: '',
       nextDueAt: input.nextDueAt || startDate,
       paused: false,
-      createdAt: nowISO(),
-      updatedAt: nowISO(),
+      createdAt: nowISO(), updatedAt: nowISO(),
     };
     set((s) => ({ personal: { ...s.personal, recurring: [...s.personal.recurring, recurring] } }));
     enqueue(set, get, 'recurring', 'create', recurring);
@@ -786,12 +789,8 @@ const personalSlice = (set, get) => ({
         recurring: s.personal.recurring.map((r) => {
           if (r.id !== id) return r;
           updated = { ...r, ...patch, updatedAt: nowISO() };
-          if (
-            patch.frequency !== undefined ||
-            patch.interval !== undefined ||
-            patch.dayOfMonth !== undefined ||
-            patch.daysOfWeek !== undefined
-          ) {
+          if (patch.frequency !== undefined || patch.interval !== undefined ||
+              patch.dayOfMonth !== undefined || patch.daysOfWeek !== undefined) {
             updated.nextDueAt = computeNextDueAt(updated, new Date());
           }
           return updated;
@@ -833,7 +832,6 @@ const personalSlice = (set, get) => ({
     updates.forEach((r) => enqueue(set, get, 'recurring', 'update', r));
   },
 
-  // ─── Pending entries ──────────────────────────────────────
   confirmPending: (id, overrides = {}) => {
     const p = get().personal.pending.find((x) => x.id === id);
     if (!p) return null;
@@ -881,20 +879,11 @@ const personalSlice = (set, get) => ({
   // ─── Templates ────────────────────────────────────────────
   addTemplate: ({ name, amount, currency = 'USD', type, category, notes = '', tags = '', icon = 'Coffee', color = '#7a8a8c' }) => {
     const t = {
-      id: uid('tpl'),
-      name,
-      amount: Number(amount),
-      currency,
-      type,
-      category,
-      notes,
+      id: uid('tpl'), name,
+      amount: Number(amount), currency, type, category, notes,
       tags: Array.isArray(tags) ? tags.join(',') : tags,
-      icon,
-      color,
-      useCount: 0,
-      lastUsedAt: '',
-      createdAt: nowISO(),
-      updatedAt: nowISO(),
+      icon, color, useCount: 0, lastUsedAt: '',
+      createdAt: nowISO(), updatedAt: nowISO(),
     };
     set((s) => ({ personal: { ...s.personal, templates: [...s.personal.templates, t] } }));
     enqueue(set, get, 'template', 'create', t);
@@ -926,18 +915,12 @@ const personalSlice = (set, get) => ({
     if (!t) return null;
     const tx = get().addTransaction({
       date: dateOverride || nowISO(),
-      amount: t.amount,
-      currency: t.currency,
-      type: t.type,
-      category: t.category,
-      notes: t.notes,
-      tags: t.tags,
+      amount: t.amount, currency: t.currency, type: t.type,
+      category: t.category, notes: t.notes, tags: t.tags,
     });
     const upd = {
-      ...t,
-      useCount: (Number(t.useCount) || 0) + 1,
-      lastUsedAt: nowISO(),
-      updatedAt: nowISO(),
+      ...t, useCount: (Number(t.useCount) || 0) + 1,
+      lastUsedAt: nowISO(), updatedAt: nowISO(),
     };
     set((s) => ({
       personal: {
@@ -956,8 +939,7 @@ const personalSlice = (set, get) => ({
       name, type, icon, color, bucketKey,
       order: get().personal.categories.filter((x) => x.type === type).length + 1,
       enabled: true,
-      createdAt: nowISO(),
-      updatedAt: nowISO(),
+      createdAt: nowISO(), updatedAt: nowISO(),
     };
     set((s) => ({ personal: { ...s.personal, categories: [...s.personal.categories, c] } }));
     enqueue(set, get, 'category', 'create', c);
@@ -1024,8 +1006,7 @@ const personalSlice = (set, get) => ({
     const existing = get().personal.buckets;
     existing.forEach((b) => enqueue(set, get, 'bucket', 'delete', { id: b.id }));
     const defaults = DEFAULT_BUCKETS.map((b) => ({
-      ...b, id: uid('bkt'), enabled: true,
-      createdAt: nowISO(), updatedAt: nowISO(),
+      ...b, id: uid('bkt'), enabled: true, createdAt: nowISO(), updatedAt: nowISO(),
     }));
     set((s) => ({ personal: { ...s.personal, buckets: defaults } }));
     defaults.forEach((b) => enqueue(set, get, 'bucket', 'create', b));
@@ -1054,26 +1035,14 @@ const personalSlice = (set, get) => ({
     const s = get();
     return {
       exportedAt: nowISO(),
-      version: 6,
+      version: 7,
       personal: {
-        transactions:     s.personal.transactions,
-        budgets:          s.personal.budgets,
-        debts:            s.personal.debts,
-        debtEvents:       s.personal.debtEvents,
-        investments:      s.personal.investments,
-        investmentEvents: s.personal.investmentEvents,
-        ventures:         s.personal.ventures,
-        ventureEvents:    s.personal.ventureEvents,
-        buckets:          s.personal.buckets,
-        goals:            s.personal.goals,
-        recurring:        s.personal.recurring,
-        templates:        s.personal.templates,
-        categories:       s.personal.categories,
+        ...s.personal,
       },
       app: {
         baseCurrency: s.app.baseCurrency,
-        rates:        s.app.rates,
-        theme:        s.app.theme,
+        rates: s.app.rates,
+        theme: s.app.theme,
       },
     };
   },
@@ -1090,13 +1059,14 @@ const personalSlice = (set, get) => ({
         ventures: [], ventureEvents: [],
         buckets: [], goals: [],
         recurring: [], pending: [], templates: [], categories: [],
+        borrowedDeployments: [], ventureDistributions: [],
+        ventureMilestones: [], ventureJournal: [],
         queue: [], lastDeleted: null,
       },
     }));
     await get().hydrate();
   },
 
-  // ─── Budgets (legacy) ─────────────────────────────────────
   addBudget: ({ category, limit, currency = 'USD', period = 'monthly' }) => {
     const b = { id: uid('bdg'), category, limit: Number(limit), currency, period, createdAt: nowISO(), updatedAt: nowISO() };
     set((s) => ({ personal: { ...s.personal, budgets: [...s.personal.budgets, b] } }));
@@ -1123,14 +1093,14 @@ const personalSlice = (set, get) => ({
   },
 
   // ─── Debts ────────────────────────────────────────────────
-  // Round D: addDebt now accepts direction ('owe' | 'receivable') and
-  // an optional linkedTxId back-reference. Preserved for direct calls
-  // (e.g., from the Debt module's manual debt creation if ever needed).
-  addDebt: ({ creditor, principal, currency = 'USD', dueDate, notes = '', direction = 'owe', linkedTxId = '' }) => {
+  addDebt: ({ creditor, principal, currency = 'USD', dueDate, notes = '', direction = 'owe', interestRate = 0, interestType = 'simple', linkedTxId = '' }) => {
     const d = {
-      id: uid('debt'), creditor, principal: Number(principal), currency,
+      id: uid('debt'), creditor,
+      principal: Number(principal), currency,
       dueDate: dueDate || '', notes, status: 'active',
       direction,
+      interestRate: Number(interestRate) || 0,
+      interestType,
       linkedTxId,
       createdAt: nowISO(), updatedAt: nowISO(),
     };
@@ -1139,14 +1109,22 @@ const personalSlice = (set, get) => ({
     return d;
   },
 
-  // Round D: recordRepayment now ALSO creates an audit-trail transaction
-  // so the repayment shows up in History. For direction='owe', it's an
-  // expense (money leaving you). For 'receivable', it's an income
-  // (money coming back). The audit tx has buckets={} so it doesn't
-  // re-route through allocations (bucket balances are updated by the
-  // original borrow/lend tx already; repayment is reflected in the debt
-  // event log, not in bucket balances).
-  recordRepayment: (debtId, amount) => {
+  updateDebt: (id, patch) => {
+    let updated = null;
+    set((s) => ({
+      personal: {
+        ...s.personal,
+        debts: s.personal.debts.map((d) => {
+          if (d.id !== id) return d;
+          updated = { ...d, ...patch, updatedAt: nowISO() };
+          return updated;
+        }),
+      },
+    }));
+    if (updated) enqueue(set, get, 'debt', 'update', updated);
+  },
+
+  recordRepayment: (debtId, amount, { interestPaid = 0 } = {}) => {
     const debt = get().personal.debts.find((d) => d.id === debtId);
     if (!debt) return null;
     const direction = debt.direction || 'owe';
@@ -1160,21 +1138,20 @@ const personalSlice = (set, get) => ({
     const balanceAfterBase = convert(balanceAfter, debt.currency, baseCurrency, rates);
 
     // Audit-trail transaction so this shows up in History
+    const totalPaid = cappedAmount + (Number(interestPaid) || 0);
     const auditTx = {
-      id: uid('tx'),
-      date: nowISO(),
-      amount: cappedAmount,
+      id: uid('tx'), date: nowISO(),
+      amount: totalPaid,
       currency: debt.currency,
       category: direction === 'owe' ? 'Repayment' : 'Repayment received',
       type: direction === 'owe' ? 'expense' : 'income',
       notes: direction === 'owe'
-        ? `Paid ${debt.creditor}`
+        ? `Paid ${debt.creditor}${interestPaid > 0 ? ` (incl. ${interestPaid} interest)` : ''}`
         : `${debt.creditor} repaid`,
       tags: '',
-      buckets: {}, // no allocation — repayment is tracked in debt events
+      buckets: {},
       linkedDebtId: debtId,
-      createdAt: nowISO(),
-      updatedAt: nowISO(),
+      createdAt: nowISO(), updatedAt: nowISO(),
       _pending: true,
     };
     set((s) => ({ personal: { ...s.personal, transactions: [auditTx, ...s.personal.transactions] } }));
@@ -1184,6 +1161,7 @@ const personalSlice = (set, get) => ({
       id: uid('devt'), debtId, type: 'repayment',
       amount: cappedAmount, currency: debt.currency,
       balanceAfter, balanceAfterBase, baseCurrency,
+      interestPaid: Number(interestPaid) || 0,
       notes: '', date: nowISO(), createdAt: nowISO(),
     };
     set((s) => ({ personal: { ...s.personal, debtEvents: [...s.personal.debtEvents, event] } }));
@@ -1207,16 +1185,74 @@ const personalSlice = (set, get) => ({
     enqueue(set, get, 'debt', 'delete', { id });
   },
 
+  // ─── Round E: Borrowed-pool deployments ───────────────────
+  //
+  // When the user "deploys" borrowed capital (uses it to fund an
+  // investment, venture, or transfers it into a regular bucket), we
+  // log a borrowedDeployment row tying the source debt to where the
+  // money went. Used for the deployment-trail viewer + ROI tracking.
+  //
+  recordBorrowedDeployment: ({ sourceDebtId, destinationType, destinationId, destinationLabel, amount, currency = 'USD', note = '' }) => {
+    const dep = {
+      id: uid('bdep'),
+      sourceDebtId,
+      destinationType,        // 'investment' | 'venture' | 'bucket' | 'cash'
+      destinationId: destinationId || '',
+      destinationLabel: destinationLabel || '',
+      amount: Number(amount),
+      currency,
+      date: nowISO(),
+      note,
+      createdAt: nowISO(),
+    };
+    set((s) => ({
+      personal: { ...s.personal, borrowedDeployments: [...s.personal.borrowedDeployments, dep] },
+    }));
+    enqueue(set, get, 'borrowedDeployment', 'create', dep);
+    return dep;
+  },
+
   // ─── Investments ──────────────────────────────────────────
-  addInvestment: ({ kind, name, units, costBasis, currentPrice, currency = 'USD' }) => {
+  addInvestment: ({ kind, name, units, costBasis, currentPrice, currency = 'USD', fundedByDebtId = '' }) => {
     const inv = {
       id: uid('inv'), kind, name,
       units: Number(units), costBasis: Number(costBasis),
       currentPrice: Number(currentPrice ?? costBasis),
-      currency, createdAt: nowISO(), updatedAt: nowISO(),
+      currency,
+      fundedByDebtId,
+      createdAt: nowISO(), updatedAt: nowISO(),
     };
     set((s) => ({ personal: { ...s.personal, investments: [...s.personal.investments, inv] } }));
     enqueue(set, get, 'investment', 'create', inv);
+
+    // If funded by borrowed capital, log a deployment row
+    if (fundedByDebtId) {
+      get().recordBorrowedDeployment({
+        sourceDebtId: fundedByDebtId,
+        destinationType: 'investment',
+        destinationId: inv.id,
+        destinationLabel: name,
+        amount: Number(units) * Number(costBasis),
+        currency,
+        note: 'Investment funded',
+      });
+    } else {
+      // Otherwise this is paid out of War Chest — log a tx so the bucket reflects it
+      const tx = {
+        id: uid('tx'), date: nowISO(),
+        amount: Number(units) * Number(costBasis),
+        currency,
+        category: 'Investment', type: 'expense',
+        notes: `📈 ${name}`,
+        tags: '',
+        buckets: { warChest: -(Number(units) * Number(costBasis)) },
+        linkedDebtId: '',
+        createdAt: nowISO(), updatedAt: nowISO(),
+        _pending: true,
+      };
+      set((s) => ({ personal: { ...s.personal, transactions: [tx, ...s.personal.transactions] } }));
+      enqueue(set, get, 'transaction', 'create', stripMeta(tx));
+    }
     return inv;
   },
 
@@ -1247,23 +1283,131 @@ const personalSlice = (set, get) => ({
     enqueue(set, get, 'investment', 'delete', { id });
   },
 
-  // ─── Ventures ─────────────────────────────────────────────
-  addVenture: ({ name, notes = '' }) => {
-    const v = { id: uid('vnt'), name, notes, status: 'active', createdAt: nowISO(), updatedAt: nowISO() };
+  // ─── Ventures (Round E rewrite) ───────────────────────────
+  addVenture: ({ name, type = 'other', notes = '', startDate = '', targetExitDate = '', currentValuation = 0, valuationCurrency = 'USD', targetMultiple = 0, partners = '' }) => {
+    const v = {
+      id: uid('vnt'), name, type, notes, status: 'active',
+      startDate: startDate || nowISO(),
+      targetExitDate: targetExitDate || '',
+      currentValuation: Number(currentValuation) || 0,
+      valuationCurrency, targetMultiple: Number(targetMultiple) || 0,
+      partners,
+      createdAt: nowISO(), updatedAt: nowISO(),
+    };
     set((s) => ({ personal: { ...s.personal, ventures: [...s.personal.ventures, v] } }));
     enqueue(set, get, 'venture', 'create', v);
     return v;
   },
-  deployToVenture: (ventureId, { amount, currency = 'USD', note = '' }) => {
+
+  updateVenture: (id, patch) => {
+    let updated = null;
+    set((s) => ({
+      personal: {
+        ...s.personal,
+        ventures: s.personal.ventures.map((v) => {
+          if (v.id !== id) return v;
+          updated = { ...v, ...patch, updatedAt: nowISO() };
+          return updated;
+        }),
+      },
+    }));
+    if (updated) enqueue(set, get, 'venture', 'update', updated);
+  },
+
+  deployToVenture: (ventureId, { amount, currency = 'USD', note = '', fundedByDebtId = '' }) => {
+    const venture = get().personal.ventures.find((v) => v.id === ventureId);
     const event = {
       id: uid('vevt'), ventureId, type: 'deploy',
       amount: Number(amount), currency, note,
+      fundedByDebtId,
       date: nowISO(), createdAt: nowISO(),
     };
     set((s) => ({ personal: { ...s.personal, ventureEvents: [...s.personal.ventureEvents, event] } }));
     enqueue(set, get, 'ventureEvent', 'create', event);
+
+    if (fundedByDebtId) {
+      get().recordBorrowedDeployment({
+        sourceDebtId: fundedByDebtId,
+        destinationType: 'venture',
+        destinationId: ventureId,
+        destinationLabel: venture?.name || 'Venture',
+        amount: Number(amount), currency, note: 'Venture deployment',
+      });
+    } else {
+      // Paid from War Chest — log a tx
+      const tx = {
+        id: uid('tx'), date: nowISO(),
+        amount: Number(amount), currency,
+        category: 'Venture', type: 'expense',
+        notes: `🚀 ${venture?.name || 'Venture'}${note ? ' · ' + note : ''}`,
+        tags: '',
+        buckets: { warChest: -Math.abs(Number(amount)) },
+        linkedDebtId: '',
+        createdAt: nowISO(), updatedAt: nowISO(),
+        _pending: true,
+      };
+      set((s) => ({ personal: { ...s.personal, transactions: [tx, ...s.personal.transactions] } }));
+      enqueue(set, get, 'transaction', 'create', stripMeta(tx));
+    }
     return event;
   },
+
+  // Round E: distributions = cash returns from a venture. Revaluation
+  // = mark-to-market update of currentValuation. Exit = wind-down.
+  recordVentureDistribution: (ventureId, { type = 'distribution', amount, currency = 'USD', note = '', date = nowISO() }) => {
+    const v = get().personal.ventures.find((x) => x.id === ventureId);
+    const dist = {
+      id: uid('vdist'), ventureId, type, amount: Number(amount) || 0, currency,
+      date, note,
+      createdAt: nowISO(),
+    };
+    set((s) => ({
+      personal: { ...s.personal, ventureDistributions: [...s.personal.ventureDistributions, dist] },
+    }));
+    enqueue(set, get, 'ventureDistribution', 'create', dist);
+
+    // For cash distributions, also create an income tx into War Chest
+    if (type === 'distribution' && Number(amount) > 0) {
+      const tx = {
+        id: uid('tx'), date,
+        amount: Number(amount), currency,
+        category: 'Investment', type: 'income',
+        notes: `💰 ${v?.name || 'Venture'} distribution${note ? ' · ' + note : ''}`,
+        tags: '',
+        buckets: { warChest: Math.abs(Number(amount)) },
+        linkedDebtId: '',
+        createdAt: nowISO(), updatedAt: nowISO(),
+        _pending: true,
+      };
+      set((s) => ({ personal: { ...s.personal, transactions: [tx, ...s.personal.transactions] } }));
+      enqueue(set, get, 'transaction', 'create', stripMeta(tx));
+    }
+    return dist;
+  },
+
+  // Update current valuation directly (revaluation)
+  revalueVenture: (ventureId, newValuation, currency, note = '') => {
+    const v = get().personal.ventures.find((x) => x.id === ventureId);
+    if (!v) return null;
+    get().updateVenture(ventureId, {
+      currentValuation: Number(newValuation),
+      valuationCurrency: currency || v.valuationCurrency || 'USD',
+    });
+    // Log a zero-cash distribution row as a revaluation marker
+    const dist = {
+      id: uid('vdist'), ventureId, type: 'revaluation',
+      amount: Number(newValuation) || 0,
+      currency: currency || v.valuationCurrency || 'USD',
+      date: nowISO(), note,
+      createdAt: nowISO(),
+    };
+    set((s) => ({
+      personal: { ...s.personal, ventureDistributions: [...s.personal.ventureDistributions, dist] },
+    }));
+    enqueue(set, get, 'ventureDistribution', 'create', dist);
+    return dist;
+  },
+
   setVentureStatus: (id, status) => {
     let updated = null;
     set((s) => ({
@@ -1278,9 +1422,74 @@ const personalSlice = (set, get) => ({
     }));
     if (updated) enqueue(set, get, 'venture', 'update', updated);
   },
+
   removeVenture: (id) => {
     set((s) => ({ personal: { ...s.personal, ventures: s.personal.ventures.filter((v) => v.id !== id) } }));
     enqueue(set, get, 'venture', 'delete', { id });
+  },
+
+  // ─── Venture milestones ──────────────────────────────────
+  addVentureMilestone: (ventureId, { name, targetDate = '', note = '' }) => {
+    const m = {
+      id: uid('vmil'), ventureId, name,
+      targetDate: targetDate || '',
+      completedDate: '',
+      status: 'pending', note,
+      createdAt: nowISO(), updatedAt: nowISO(),
+    };
+    set((s) => ({
+      personal: { ...s.personal, ventureMilestones: [...s.personal.ventureMilestones, m] },
+    }));
+    enqueue(set, get, 'ventureMilestone', 'create', m);
+    return m;
+  },
+
+  toggleVentureMilestone: (id) => {
+    let updated = null;
+    set((s) => ({
+      personal: {
+        ...s.personal,
+        ventureMilestones: s.personal.ventureMilestones.map((m) => {
+          if (m.id !== id) return m;
+          const wasDone = m.status === 'completed';
+          updated = {
+            ...m,
+            status: wasDone ? 'pending' : 'completed',
+            completedDate: wasDone ? '' : nowISO(),
+            updatedAt: nowISO(),
+          };
+          return updated;
+        }),
+      },
+    }));
+    if (updated) enqueue(set, get, 'ventureMilestone', 'update', updated);
+  },
+
+  removeVentureMilestone: (id) => {
+    set((s) => ({
+      personal: { ...s.personal, ventureMilestones: s.personal.ventureMilestones.filter((m) => m.id !== id) },
+    }));
+    enqueue(set, get, 'ventureMilestone', 'delete', { id });
+  },
+
+  // ─── Venture journal ─────────────────────────────────────
+  addVentureJournalEntry: (ventureId, entry) => {
+    const j = {
+      id: uid('vjnl'), ventureId, entry,
+      date: nowISO(), createdAt: nowISO(),
+    };
+    set((s) => ({
+      personal: { ...s.personal, ventureJournal: [...s.personal.ventureJournal, j] },
+    }));
+    enqueue(set, get, 'ventureJournal', 'create', j);
+    return j;
+  },
+
+  removeVentureJournalEntry: (id) => {
+    set((s) => ({
+      personal: { ...s.personal, ventureJournal: s.personal.ventureJournal.filter((j) => j.id !== id) },
+    }));
+    enqueue(set, get, 'ventureJournal', 'delete', { id });
   },
 
   // ─── Sync ─────────────────────────────────────────────────
@@ -1298,12 +1507,23 @@ const personalSlice = (set, get) => ({
         tags: t.tags || '',
         linkedDebtId: t.linkedDebtId || '',
       }));
-
-      // Round D: default missing direction on debts to 'owe' for legacy rows
       const debts = (data.debts || []).map((d) => ({
         ...d,
         direction: d.direction || 'owe',
+        interestRate: Number(d.interestRate) || 0,
+        interestType: d.interestType || 'simple',
         linkedTxId: d.linkedTxId || '',
+      }));
+      const ventures = (data.ventures || []).map((v) => ({
+        ...v,
+        type: v.type || 'other',
+        status: v.status || 'active',
+        startDate: v.startDate || '',
+        targetExitDate: v.targetExitDate || '',
+        currentValuation: Number(v.currentValuation) || 0,
+        valuationCurrency: v.valuationCurrency || 'USD',
+        targetMultiple: Number(v.targetMultiple) || 0,
+        partners: v.partners || '',
       }));
 
       set((s) => ({
@@ -1318,7 +1538,7 @@ const personalSlice = (set, get) => ({
           debtEvents:       data.debtEvents       || s.personal.debtEvents,
           investments:      data.investments      || s.personal.investments,
           investmentEvents: data.investmentEvents || s.personal.investmentEvents,
-          ventures:         data.ventures         || s.personal.ventures,
+          ventures:         ventures.length ? ventures : s.personal.ventures,
           ventureEvents:    data.ventureEvents    || s.personal.ventureEvents,
           buckets:          (data.buckets && data.buckets.length) ? data.buckets : s.personal.buckets,
           goals:            data.goals            || s.personal.goals,
@@ -1326,14 +1546,16 @@ const personalSlice = (set, get) => ({
           pending:          data.pending          || s.personal.pending,
           templates:        data.templates        || s.personal.templates,
           categories:       (data.categories && data.categories.length) ? data.categories : s.personal.categories,
+          borrowedDeployments:  data.borrowedDeployments  || s.personal.borrowedDeployments,
+          ventureDistributions: data.ventureDistributions || s.personal.ventureDistributions,
+          ventureMilestones:    data.ventureMilestones    || s.personal.ventureMilestones,
+          ventureJournal:       data.ventureJournal       || s.personal.ventureJournal,
           lastSyncAt: nowISO(),
           syncError: null,
         },
         app: { ...s.app, online: true },
       }));
 
-      // Round D: always run migrations to ensure Holding bucket and
-      // Borrowed/Lent categories exist
       get().initializeBuckets();
       get().initializeCategories();
     } catch (err) {
@@ -1400,6 +1622,8 @@ const personalSlice = (set, get) => ({
         collectIds(data.buckets); collectIds(data.goals);
         collectIds(data.recurring); collectIds(data.pending);
         collectIds(data.templates); collectIds(data.categories);
+        collectIds(data.borrowedDeployments); collectIds(data.ventureDistributions);
+        collectIds(data.ventureMilestones); collectIds(data.ventureJournal);
 
         const stillPending = queue.filter((op) => {
           if (op.action === 'create') return !seenIds.has(op.id);
@@ -1471,7 +1695,7 @@ export const useStore = create()(
     {
       name: 'fintrack-v2',
       storage: createJSONStorage(() => localStorage),
-      version: 6, // Round D bump
+      version: 7, // Round E bump
       partialize: (s) => ({
         app: {
           workspace: s.app.workspace,
@@ -1496,6 +1720,10 @@ export const useStore = create()(
           pending:          s.personal.pending,
           templates:        s.personal.templates,
           categories:       s.personal.categories,
+          borrowedDeployments:  s.personal.borrowedDeployments,
+          ventureDistributions: s.personal.ventureDistributions,
+          ventureMilestones:    s.personal.ventureMilestones,
+          ventureJournal:       s.personal.ventureJournal,
           queue:            s.personal.queue,
           lastSyncAt:       s.personal.lastSyncAt,
           lastTickAt:       s.personal.lastTickAt,
@@ -1517,7 +1745,40 @@ export const useStore = create()(
           pending:          p.personal.pending          || [],
           templates:        p.personal.templates        || [],
           categories:       p.personal.categories       || [],
+          borrowedDeployments:   p.personal.borrowedDeployments   || [],
+          ventureDistributions:  p.personal.ventureDistributions  || [],
+          ventureMilestones:     p.personal.ventureMilestones     || [],
+          ventureJournal:        p.personal.ventureJournal        || [],
         };
+        // Round E: KILL Holding bucket from existing stores
+        if (Array.isArray(p.personal.buckets)) {
+          p.personal.buckets = p.personal.buckets.filter((b) => b.key !== 'holding');
+        }
+        // Round E: rewrite any transaction allocations that referenced 'holding' → 'operations'
+        if (Array.isArray(p.personal.transactions)) {
+          p.personal.transactions = p.personal.transactions.map((t) => {
+            const newBuckets = {};
+            for (const [k, v] of Object.entries(t.buckets || {})) {
+              if (k === 'holding') {
+                // Borrowed inflows: blank out (now in pool); other inflows: move to operations
+                if (t.category === BORROWED_CATEGORY) {
+                  // leave it out — Borrowed now has empty buckets {}
+                } else {
+                  newBuckets.operations = (newBuckets.operations || 0) + (Number(v) || 0);
+                }
+              } else {
+                newBuckets[k] = v;
+              }
+            }
+            return {
+              ...t,
+              buckets: newBuckets,
+              tags: t.tags || '',
+              linkedDebtId: t.linkedDebtId || '',
+            };
+          });
+        }
+        // Round E: legacy ventures — fill in new fields
         if (Array.isArray(p.personal.ventures)) {
           const events = [...(p.personal.ventureEvents || [])];
           p.personal.ventures = p.personal.ventures.map((v) => {
@@ -1529,29 +1790,34 @@ export const useStore = create()(
                   amount: Number(d.amount) || 0,
                   currency: d.currency || 'USD',
                   note: d.note || '',
+                  fundedByDebtId: '',
                   date: d.date || nowISO(),
                   createdAt: d.date || nowISO(),
                 });
               }
             }
             const { deployed, ...rest } = v;
-            return rest;
+            return {
+              ...rest,
+              type: rest.type || 'other',
+              status: rest.status || 'active',
+              startDate: rest.startDate || '',
+              targetExitDate: rest.targetExitDate || '',
+              currentValuation: Number(rest.currentValuation) || 0,
+              valuationCurrency: rest.valuationCurrency || 'USD',
+              targetMultiple: Number(rest.targetMultiple) || 0,
+              partners: rest.partners || '',
+            };
           });
           p.personal.ventureEvents = events;
         }
-        if (Array.isArray(p.personal.transactions)) {
-          p.personal.transactions = p.personal.transactions.map((t) => ({
-            ...t,
-            buckets: t.buckets || {},
-            tags: t.tags || '',
-            linkedDebtId: t.linkedDebtId || '',
-          }));
-        }
-        // Round D: default direction='owe' on existing debts
+        // Round E: legacy debts — default direction + interest fields
         if (Array.isArray(p.personal.debts)) {
           p.personal.debts = p.personal.debts.map((d) => ({
             ...d,
             direction: d.direction || 'owe',
+            interestRate: Number(d.interestRate) || 0,
+            interestType: d.interestType || 'simple',
             linkedTxId: d.linkedTxId || '',
           }));
         }
@@ -1588,6 +1854,13 @@ export function computeVentureDeployed(ventureEvents, ventureId) {
     .reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
 }
 
+// Round E: compute total distributions (cash returned) per venture
+export function computeVentureDistributions(ventureDistributions, ventureId) {
+  return (ventureDistributions || [])
+    .filter((d) => d.ventureId === ventureId && d.type === 'distribution')
+    .reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+}
+
 export function computeBucketBalances(transactions, base, rates) {
   const balances = {};
   for (const tx of transactions) {
@@ -1601,8 +1874,8 @@ export function computeBucketBalances(transactions, base, rates) {
   return balances;
 }
 
-// Round D: total liquid = sum of POSITIVE bucket balances. This is the
-// "Available to spend" hero number on Home.
+// Round E: "Available to spend" = sum of POSITIVE bucket balances
+// (excluding the borrowed pool which is separate)
 export function computeTotalLiquid(transactions, base, rates) {
   const balances = computeBucketBalances(transactions, base, rates);
   let total = 0;
@@ -1610,6 +1883,61 @@ export function computeTotalLiquid(transactions, base, rates) {
     if (v > 0) total += v;
   }
   return total;
+}
+
+// Round E: borrowed-pool balance = sum of outstanding 'owe' debt principals
+// minus sum of borrowedDeployments tied to that debt.
+// In base currency.
+export function computeBorrowedPool(debts, debtEvents, borrowedDeployments, base, rates) {
+  let total = 0;
+  for (const d of debts) {
+    if ((d.direction || 'owe') !== 'owe') continue;
+    if (d.status === 'paid') continue;
+    const repaid = computeDebtRepaid(debtEvents, d.id);
+    const remainingDebt = d.principal - repaid;
+    if (remainingDebt <= 0) continue;
+    // The actual pool from this debt = principal received − deployed so far
+    const deployed = (borrowedDeployments || [])
+      .filter((dep) => dep.sourceDebtId === d.id)
+      .reduce((sum, dep) => sum + convert(Number(dep.amount) || 0, dep.currency || 'USD', d.currency, rates), 0);
+    const undeployed = Math.max(0, d.principal - deployed);
+    total += convert(undeployed, d.currency, base, rates);
+  }
+  return total;
+}
+
+// Round E: per-debt deployment trail — used by the Debt module to show
+// where the borrowed money went. Returns array of deployments enriched
+// with destination value (current value of the investment or venture
+// it funded) so we can compute ROI.
+export function computeDebtTrail(debt, borrowedDeployments, investments, ventures, ventureEvents, ventureDistributions, base, rates) {
+  const myDeployments = (borrowedDeployments || []).filter((d) => d.sourceDebtId === debt.id);
+  return myDeployments.map((d) => {
+    const amountBase = convert(Number(d.amount) || 0, d.currency || 'USD', base, rates);
+    let currentValueBase = amountBase; // default: at-cost
+    let roi = 0;
+    if (d.destinationType === 'investment') {
+      const inv = (investments || []).find((i) => i.id === d.destinationId);
+      if (inv) {
+        const currentValue = inv.units * inv.currentPrice;
+        currentValueBase = convert(currentValue * (Number(d.amount) / Math.max(1, inv.units * inv.costBasis)), inv.currency, base, rates);
+        roi = currentValueBase - amountBase;
+      }
+    } else if (d.destinationType === 'venture') {
+      const v = (ventures || []).find((x) => x.id === d.destinationId);
+      if (v) {
+        const totalDeployed = computeVentureDeployed(ventureEvents, v.id);
+        const valuation = Number(v.currentValuation) || 0;
+        const distributions = computeVentureDistributions(ventureDistributions, v.id);
+        const shareOfPie = totalDeployed > 0 ? (Number(d.amount) / totalDeployed) : 0;
+        const valuationShareBase = convert(valuation * shareOfPie, v.valuationCurrency || 'USD', base, rates);
+        const distributionShareBase = convert(distributions * shareOfPie, v.valuationCurrency || 'USD', base, rates);
+        currentValueBase = valuationShareBase + distributionShareBase;
+        roi = currentValueBase - amountBase;
+      }
+    }
+    return { ...d, amountBase, currentValueBase, roi };
+  });
 }
 
 export function computeBucketMTD(transactions, base, rates) {
@@ -1643,9 +1971,7 @@ export function computeGoalsForBucket(goals, bucketKey, bucketBalance, base, rat
     const filled = Math.min(remaining, targetBase);
     remaining -= filled;
     result.push({
-      ...g,
-      filledBase: filled,
-      targetBase,
+      ...g, filledBase: filled, targetBase,
       progress: targetBase > 0 ? filled / targetBase : 0,
       ready: filled >= targetBase,
     });
@@ -1657,14 +1983,58 @@ export function computeGoalsForBucket(goals, bucketKey, bucketBalance, base, rat
     const share = parallelTotalTarget > 0 ? targetBase / parallelTotalTarget : 0;
     const filled = Math.min(targetBase, remaining * share);
     result.push({
-      ...g,
-      filledBase: filled,
-      targetBase,
+      ...g, filledBase: filled, targetBase,
       progress: targetBase > 0 ? filled / targetBase : 0,
       ready: filled >= targetBase,
     });
   }
   return result.sort((a, b) => a.priority - b.priority);
+}
+
+// Round E: computeBucketImpact — used by the SpendingWarning overlay
+//
+// Given the user's pending expense, compute:
+//   - balance before vs after in the affected bucket
+//   - estimated days of delay based on 30d avg inflow into that bucket
+//   - which goals are affected and by how much
+//
+export function computeBucketImpact(transactions, goals, bucketKey, expenseAmount, expenseCurrency, base, rates) {
+  const balances = computeBucketBalances(transactions, base, rates);
+  const balance = balances[bucketKey] || 0;
+  const expenseInBase = convert(Number(expenseAmount) || 0, expenseCurrency || 'USD', base, rates);
+  const balanceAfter = balance - expenseInBase;
+
+  // 30-day average daily inflow
+  const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
+  let total30d = 0;
+  for (const t of transactions) {
+    if (new Date(t.date).getTime() < cutoff) continue;
+    const allocations = t.buckets || {};
+    const v = allocations[bucketKey];
+    if (typeof v === 'number' && v > 0) {
+      total30d += convert(v, t.currency || 'USD', base, rates);
+    }
+  }
+  const dailyInflow = total30d / 30;
+  const delayDays = dailyInflow > 0 ? Math.round(expenseInBase / dailyInflow) : null;
+
+  // Goals impacted
+  const goalsBefore = computeGoalsForBucket(goals, bucketKey, balance, base, rates);
+  const goalsAfter  = computeGoalsForBucket(goals, bucketKey, balanceAfter, base, rates);
+  const affectedGoals = goalsBefore.map((g) => {
+    const after = goalsAfter.find((x) => x.id === g.id) || g;
+    return {
+      id: g.id, name: g.name,
+      target: g.targetBase,
+      filledBefore: g.filledBase,
+      filledAfter: Math.max(0, after.filledBase),
+      deficit: Math.max(0, g.targetBase - after.filledBase),
+      wasReady: g.ready,
+      stillReady: after.ready,
+    };
+  });
+
+  return { balance, balanceAfter, dailyInflow, delayDays, affectedGoals };
 }
 
 export function gatherTags(transactions) {
@@ -1718,6 +2088,11 @@ export const selectRecurring        = (s) => s.personal.recurring;
 export const selectPending          = (s) => s.personal.pending;
 export const selectTemplates        = (s) => s.personal.templates;
 export const selectCategories       = (s) => s.personal.categories;
+// Round E new
+export const selectBorrowedDeployments  = (s) => s.personal.borrowedDeployments;
+export const selectVentureDistributions = (s) => s.personal.ventureDistributions;
+export const selectVentureMilestones    = (s) => s.personal.ventureMilestones;
+export const selectVentureJournal       = (s) => s.personal.ventureJournal;
 export const selectActiveTab        = (s) => s.app.activeTab;
 export const selectBaseCurrency     = (s) => s.app.baseCurrency;
 export const selectRates            = (s) => s.app.rates;
@@ -1732,7 +2107,7 @@ export const selectSearchQuery      = (s) => s.app.searchQuery;
 export const selectSearchOpen       = (s) => s.app.searchOpen;
 export const selectSettingsOpen     = (s) => s.app.settingsOpen;
 
-// Round D: only count direction='owe' debts toward "you owe" total
+// Round E: only count direction='owe' debts as "you owe"
 export const selectTotalDebtInBase = (state) => {
   const base = state.app.baseCurrency;
   const rates = state.app.rates;
@@ -1746,7 +2121,6 @@ export const selectTotalDebtInBase = (state) => {
   return sum;
 };
 
-// Round D: receivables — money owed TO you
 export const selectTotalReceivableInBase = (state) => {
   const base = state.app.baseCurrency;
   const rates = state.app.rates;
@@ -1759,6 +2133,53 @@ export const selectTotalReceivableInBase = (state) => {
   }
   return sum;
 };
+
+// Round E: Net worth = cash liquid + investments + ventures + receivables − debts(owe)
+// Borrowed pool NOT counted (offset by debt). Lent money debits bucket but creates
+// equal receivable → cancels out by construction.
+export const selectNetWorth = (state) => {
+  const base = state.app.baseCurrency;
+  const rates = state.app.rates;
+  const liquid = computeTotalLiquid(state.personal.transactions, base, rates);
+
+  let invValue = 0;
+  for (const inv of state.personal.investments) {
+    invValue += convert(inv.units * inv.currentPrice, inv.currency, base, rates);
+  }
+
+  let ventureValue = 0;
+  for (const v of state.personal.ventures) {
+    if (v.status === 'failed') continue;
+    ventureValue += convert(Number(v.currentValuation) || 0, v.valuationCurrency || 'USD', base, rates);
+  }
+
+  let receivables = 0;
+  for (const d of state.personal.debts) {
+    if (d.direction !== 'receivable') continue;
+    const repaid = computeDebtRepaid(state.personal.debtEvents, d.id);
+    const remaining = d.principal - repaid;
+    if (remaining > 0) receivables += convert(remaining, d.currency, base, rates);
+  }
+
+  let debts = 0;
+  for (const d of state.personal.debts) {
+    if ((d.direction || 'owe') !== 'owe') continue;
+    const repaid = computeDebtRepaid(state.personal.debtEvents, d.id);
+    const remaining = d.principal - repaid;
+    if (remaining > 0) debts += convert(remaining, d.currency, base, rates);
+  }
+
+  return liquid + invValue + ventureValue + receivables - debts;
+};
+
+// Borrowed pool selector
+export const selectBorrowedPool = (state) => computeBorrowedPool(
+  state.personal.debts,
+  state.personal.debtEvents,
+  state.personal.borrowedDeployments,
+  state.app.baseCurrency,
+  state.app.rates,
+);
 
 export function computeMonthSummary(transactions, base, rates) {
   const monthStart = new Date();
@@ -1784,19 +2205,42 @@ export function computeInvestmentTotals(investments, base, rates) {
   return { cost, value, gain: value - cost, gainPct: cost > 0 ? (value - cost) / cost : 0 };
 }
 
-export function computeVentureTotals(ventures, ventureEvents, base, rates) {
+// Round E: ventures totals now include valuation, distributions, ROI
+export function computeVentureTotals(ventures, ventureEvents, ventureDistributions, base, rates) {
   return ventures.map((v) => {
-    const events = ventureEvents.filter((e) => e.ventureId === v.id);
-    let total = 0;
-    for (const e of events) {
-      if (e.type === 'deploy') total += convert(e.amount, e.currency, base, rates);
+    const deployEvents = ventureEvents.filter((e) => e.ventureId === v.id && e.type === 'deploy');
+    let deployedTotal = 0;
+    for (const e of deployEvents) {
+      deployedTotal += convert(e.amount, e.currency, base, rates);
     }
-    return { ...v, deployedTotal: total, deployments: events };
+    let distributionsTotal = 0;
+    const dists = (ventureDistributions || []).filter((d) => d.ventureId === v.id && d.type === 'distribution');
+    for (const d of dists) {
+      distributionsTotal += convert(d.amount, d.currency, base, rates);
+    }
+    const valuationBase = convert(Number(v.currentValuation) || 0, v.valuationCurrency || 'USD', base, rates);
+    const currentValueBase = valuationBase + distributionsTotal;
+    const roi = currentValueBase - deployedTotal;
+    const roiPct = deployedTotal > 0 ? roi / deployedTotal : 0;
+    const multiple = deployedTotal > 0 ? currentValueBase / deployedTotal : 0;
+    return {
+      ...v,
+      deployedTotal,
+      distributionsTotal,
+      valuationBase,
+      currentValueBase,
+      roi,
+      roiPct,
+      multiple,
+      deployments: deployEvents,
+      distributions: dists,
+    };
   });
 }
 
-// Round D: surface direction in the computed shape too
+// Round E: debts with status + projected payback
 export function computeDebtsWithStatus(debts, debtEvents, base, rates) {
+  const now = new Date();
   return debts.map((d) => {
     const repaid = computeDebtRepaid(debtEvents, d.id);
     const remaining = d.principal - repaid;
@@ -1804,7 +2248,18 @@ export function computeDebtsWithStatus(debts, debtEvents, base, rates) {
     const events = debtEvents
       .filter((e) => e.debtId === d.id)
       .sort((a, b) => new Date(b.date) - new Date(a.date));
-    return { ...d, direction: d.direction || 'owe', repaid, remaining, remainingBase, events };
+    const accruedInterest = computeAccruedInterest(d, now);
+    const projectedPayback = computeProjectedPayback(d);
+    return {
+      ...d,
+      direction: d.direction || 'owe',
+      interestRate: Number(d.interestRate) || 0,
+      interestType: d.interestType || 'simple',
+      repaid, remaining, remainingBase,
+      accruedInterest,
+      projectedPayback,
+      events,
+    };
   });
 }
 
