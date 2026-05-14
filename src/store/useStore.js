@@ -39,6 +39,12 @@ function enqueue(set, get, entity, action, payload) {
 export const BORROWED_CATEGORY = 'Borrowed';
 export const LENT_CATEGORY     = 'Lent';
 
+// Legacy export: kept so any Round D module that still imports it
+// won't crash at module load. Holding is gone, but the symbol
+// returning a stable string avoids breaking sibling modules until
+// they're updated.
+export const HOLDING_BUCKET_KEY = 'holding';
+
 // Venture types — used by the Investments module
 export const VENTURE_TYPES = [
   { id: 'business',    label: 'Other Business' },
@@ -1497,9 +1503,9 @@ const personalSlice = (set, get) => ({
     try {
       const data = await api.fetchAll();
       const pendingIds = new Set(
-        get().personal.queue.filter((op) => op.action === 'create').map((op) => op.id)
+        (get().personal.queue || []).filter((op) => op.action === 'create').map((op) => op.id)
       );
-      const localPendingTx = get().personal.transactions.filter((t) => pendingIds.has(t.id));
+      const localPendingTx = (get().personal.transactions || []).filter((t) => pendingIds.has(t.id));
       const txs = (data.transactions || []).map((t) => ({
         ...t,
         currency: t.currency || 'USD',
@@ -1736,8 +1742,13 @@ export const useStore = create()(
         if (!p.personal) return p;
         p.personal = {
           ...p.personal,
+          transactions:     p.personal.transactions     || [],
+          budgets:          p.personal.budgets          || [],
+          debts:            p.personal.debts            || [],
           debtEvents:       p.personal.debtEvents       || [],
+          investments:      p.personal.investments      || [],
           investmentEvents: p.personal.investmentEvents || [],
+          ventures:         p.personal.ventures         || [],
           ventureEvents:    p.personal.ventureEvents    || [],
           buckets:          p.personal.buckets          || [],
           goals:            p.personal.goals            || [],
@@ -1749,6 +1760,8 @@ export const useStore = create()(
           ventureDistributions:  p.personal.ventureDistributions  || [],
           ventureMilestones:     p.personal.ventureMilestones     || [],
           ventureJournal:        p.personal.ventureJournal        || [],
+          queue:            p.personal.queue            || [],
+          syncLog:          p.personal.syncLog          || [],
         };
         // Round E: KILL Holding bucket from existing stores
         if (Array.isArray(p.personal.buckets)) {
@@ -2097,7 +2110,7 @@ export const selectActiveTab        = (s) => s.app.activeTab;
 export const selectBaseCurrency     = (s) => s.app.baseCurrency;
 export const selectRates            = (s) => s.app.rates;
 export const selectTheme            = (s) => s.app.theme;
-export const selectQueueSize        = (s) => s.personal.queue.length;
+export const selectQueueSize        = (s) => (s.personal.queue || []).length;
 export const selectSyncLog          = (s) => s.personal.syncLog;
 export const selectIsSyncing        = (s) => s.personal.syncing;
 export const selectIsOnline         = (s) => s.app.online;
@@ -2112,9 +2125,9 @@ export const selectTotalDebtInBase = (state) => {
   const base = state.app.baseCurrency;
   const rates = state.app.rates;
   let sum = 0;
-  for (const d of state.personal.debts) {
+  for (const d of (state.personal.debts || [])) {
     if ((d.direction || 'owe') !== 'owe') continue;
-    const repaid = computeDebtRepaid(state.personal.debtEvents, d.id);
+    const repaid = computeDebtRepaid(state.personal.debtEvents || [], d.id);
     const remaining = d.principal - repaid;
     if (remaining > 0) sum += convert(remaining, d.currency, base, rates);
   }
@@ -2125,9 +2138,9 @@ export const selectTotalReceivableInBase = (state) => {
   const base = state.app.baseCurrency;
   const rates = state.app.rates;
   let sum = 0;
-  for (const d of state.personal.debts) {
+  for (const d of (state.personal.debts || [])) {
     if (d.direction !== 'receivable') continue;
-    const repaid = computeDebtRepaid(state.personal.debtEvents, d.id);
+    const repaid = computeDebtRepaid(state.personal.debtEvents || [], d.id);
     const remaining = d.principal - repaid;
     if (remaining > 0) sum += convert(remaining, d.currency, base, rates);
   }
@@ -2140,31 +2153,31 @@ export const selectTotalReceivableInBase = (state) => {
 export const selectNetWorth = (state) => {
   const base = state.app.baseCurrency;
   const rates = state.app.rates;
-  const liquid = computeTotalLiquid(state.personal.transactions, base, rates);
+  const liquid = computeTotalLiquid(state.personal.transactions || [], base, rates);
 
   let invValue = 0;
-  for (const inv of state.personal.investments) {
+  for (const inv of (state.personal.investments || [])) {
     invValue += convert(inv.units * inv.currentPrice, inv.currency, base, rates);
   }
 
   let ventureValue = 0;
-  for (const v of state.personal.ventures) {
+  for (const v of (state.personal.ventures || [])) {
     if (v.status === 'failed') continue;
     ventureValue += convert(Number(v.currentValuation) || 0, v.valuationCurrency || 'USD', base, rates);
   }
 
   let receivables = 0;
-  for (const d of state.personal.debts) {
+  for (const d of (state.personal.debts || [])) {
     if (d.direction !== 'receivable') continue;
-    const repaid = computeDebtRepaid(state.personal.debtEvents, d.id);
+    const repaid = computeDebtRepaid(state.personal.debtEvents || [], d.id);
     const remaining = d.principal - repaid;
     if (remaining > 0) receivables += convert(remaining, d.currency, base, rates);
   }
 
   let debts = 0;
-  for (const d of state.personal.debts) {
+  for (const d of (state.personal.debts || [])) {
     if ((d.direction || 'owe') !== 'owe') continue;
-    const repaid = computeDebtRepaid(state.personal.debtEvents, d.id);
+    const repaid = computeDebtRepaid(state.personal.debtEvents || [], d.id);
     const remaining = d.principal - repaid;
     if (remaining > 0) debts += convert(remaining, d.currency, base, rates);
   }
@@ -2174,9 +2187,9 @@ export const selectNetWorth = (state) => {
 
 // Borrowed pool selector
 export const selectBorrowedPool = (state) => computeBorrowedPool(
-  state.personal.debts,
-  state.personal.debtEvents,
-  state.personal.borrowedDeployments,
+  state.personal.debts || [],
+  state.personal.debtEvents || [],
+  state.personal.borrowedDeployments || [],
   state.app.baseCurrency,
   state.app.rates,
 );
