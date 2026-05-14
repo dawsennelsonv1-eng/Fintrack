@@ -34,9 +34,10 @@ export default function BucketBars() {
   const monthly  = useMemo(() => computeMonthSummary(transactions, baseCurrency, rates), [transactions, baseCurrency, rates]);
 
   const sorted = useMemo(() => {
+    if (!Array.isArray(buckets)) return [];
     return [...buckets]
-      .filter((b) => b.enabled !== false)
-      .sort((a, b) => a.order - b.order);
+      .filter((b) => b && b.enabled !== false)
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
   }, [buckets]);
 
   if (sorted.length === 0) return null;
