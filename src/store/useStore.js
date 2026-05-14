@@ -1532,30 +1532,48 @@ const personalSlice = (set, get) => ({
         partners: v.partners || '',
       }));
 
+      // CRITICAL: If server returns zero transactions, preserve local persisted txs.
+      // (Server may be on older Apps Script version, network may be partial, etc.)
+      // Server response is authoritative ONLY when it has data.
+      let mergedTransactions;
+      if (txs.length === 0) {
+        // No server data → keep what we already have locally
+        mergedTransactions = get().personal.transactions;
+      } else {
+        // Server has data → use server data, but layer local pending writes on top
+        // and preserve any local txs whose IDs the server doesn't know about yet
+        const serverIds = new Set(txs.map((t) => t.id));
+        const localOnly = (get().personal.transactions || []).filter(
+          (t) => !serverIds.has(t.id) && !pendingIds.has(t.id)
+        );
+        mergedTransactions = [
+          ...localPendingTx,
+          ...txs.filter((t) => !pendingIds.has(t.id)),
+          ...localOnly,
+        ].sort((a, b) => new Date(b.date) - new Date(a.date));
+      }
+
       set((s) => ({
         personal: {
           ...s.personal,
-          transactions: [
-            ...localPendingTx,
-            ...txs.filter((t) => !pendingIds.has(t.id)),
-          ].sort((a, b) => new Date(b.date) - new Date(a.date)),
-          budgets:          data.budgets          || s.personal.budgets,
-          debts:            debts.length ? debts  : s.personal.debts,
-          debtEvents:       data.debtEvents       || s.personal.debtEvents,
-          investments:      data.investments      || s.personal.investments,
-          investmentEvents: data.investmentEvents || s.personal.investmentEvents,
-          ventures:         ventures.length ? ventures : s.personal.ventures,
-          ventureEvents:    data.ventureEvents    || s.personal.ventureEvents,
-          buckets:          (data.buckets && data.buckets.length) ? data.buckets : s.personal.buckets,
-          goals:            data.goals            || s.personal.goals,
-          recurring:        data.recurring        || s.personal.recurring,
-          pending:          data.pending          || s.personal.pending,
-          templates:        data.templates        || s.personal.templates,
-          categories:       (data.categories && data.categories.length) ? data.categories : s.personal.categories,
-          borrowedDeployments:  data.borrowedDeployments  || s.personal.borrowedDeployments,
-          ventureDistributions: data.ventureDistributions || s.personal.ventureDistributions,
-          ventureMilestones:    data.ventureMilestones    || s.personal.ventureMilestones,
-          ventureJournal:       data.ventureJournal       || s.personal.ventureJournal,
+          transactions: mergedTransactions,
+          budgets:          (data.budgets && data.budgets.length)          ? data.budgets          : s.personal.budgets,
+          debts:            debts.length                                    ? debts                 : s.personal.debts,
+          debtEvents:       (data.debtEvents && data.debtEvents.length)    ? data.debtEvents       : s.personal.debtEvents,
+          investments:      (data.investments && data.investments.length)  ? data.investments      : s.personal.investments,
+          investmentEvents: (data.investmentEvents && data.investmentEvents.length) ? data.investmentEvents : s.personal.investmentEvents,
+          ventures:         ventures.length                                 ? ventures              : s.personal.ventures,
+          ventureEvents:    (data.ventureEvents && data.ventureEvents.length) ? data.ventureEvents : s.personal.ventureEvents,
+          buckets:          (data.buckets && data.buckets.length)          ? data.buckets          : s.personal.buckets,
+          goals:            (data.goals && data.goals.length)              ? data.goals            : s.personal.goals,
+          recurring:        (data.recurring && data.recurring.length)      ? data.recurring        : s.personal.recurring,
+          pending:          (data.pending && data.pending.length)          ? data.pending          : s.personal.pending,
+          templates:        (data.templates && data.templates.length)      ? data.templates        : s.personal.templates,
+          categories:       (data.categories && data.categories.length)    ? data.categories       : s.personal.categories,
+          borrowedDeployments:  (data.borrowedDeployments && data.borrowedDeployments.length)   ? data.borrowedDeployments  : s.personal.borrowedDeployments,
+          ventureDistributions: (data.ventureDistributions && data.ventureDistributions.length) ? data.ventureDistributions : s.personal.ventureDistributions,
+          ventureMilestones:    (data.ventureMilestones && data.ventureMilestones.length)       ? data.ventureMilestones    : s.personal.ventureMilestones,
+          ventureJournal:       (data.ventureJournal && data.ventureJournal.length)             ? data.ventureJournal       : s.personal.ventureJournal,
           lastSyncAt: nowISO(),
           syncError: null,
         },
