@@ -1,0 +1,52 @@
+/*
+ * src/styles/workspace-accent.css
+ *
+ * Tier 5a — workspace accent color CSS variables.
+ *
+ * These are SET dynamically in App.jsx via document.documentElement.style.
+ * What's defined here is just the FALLBACK defaults if JS hasn't run yet,
+ * plus utility selectors that other components can use.
+ *
+ * ─── IMPORT INSTRUCTIONS ─────────────────────────────────────
+ * Add this line to the TOP of src/index.css:
+ *
+ *     @import './styles/workspace-accent.css';
+ *
+ * Or paste the contents of this file into the top of index.css.
+ * ────────────────────────────────────────────────────────────
+ */
+
+:root {
+  /* Defaults — overridden by App.jsx on workspace change */
+  --workspace-accent: #1a1a1a;
+  --workspace-accent-fg: #fffaf2;
+  --workspace-accent-soft: rgba(122, 138, 140, 0.2);
+}
+
+/* Optional utility classes for components that want to react to
+   the current workspace accent without reading the variable inline. */
+.bg-workspace-accent {
+  background-color: var(--workspace-accent);
+  color: var(--workspace-accent-fg);
+}
+
+.bg-workspace-soft {
+  background-color: var(--workspace-accent-soft);
+}
+
+.text-workspace-accent {
+  color: var(--workspace-accent);
+}
+
+.border-workspace-accent {
+  border-color: var(--workspace-accent);
+}
+
+/* Per-workspace overrides if anything wants to target a specific one */
+[data-workspace="personal"] {
+  /* Personal keeps the default ink/cream — no override needed */
+}
+
+[data-workspace="avs"] {
+  /* Future room for AVS-specific tweaks if needed */
+}
