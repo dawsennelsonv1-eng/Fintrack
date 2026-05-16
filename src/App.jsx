@@ -1,5 +1,13 @@
 // src/App.jsx
-import { useEffect, lazy, Suspense } from 'react';
+// Tier 5a — workspace-aware module routing
+//
+// Changes from previous version:
+//   • Module map no longer hard-coded; pulled from active workspace's registry
+//   • Auto-resets activeTab to workspace's defaultTab when switching workspaces
+//     if the current tab doesn't exist in the new workspace
+//   • Applies workspace accent color as CSS variable on the root element
+//
+import { useEffect, Suspense } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useStore, selectTheme, selectActiveTab } from './store/useStore';
 import Header from './components/Header';
@@ -10,22 +18,7 @@ import { UndoToast } from './components/TxActions';
 import InstallPrompt from './components/InstallPrompt';
 import SearchOverlay from './components/SearchOverlay';
 import Settings from './components/Settings';
-
-// Round D: Compare module is GONE as a standalone route — it now lives
-// inside the Calendar tab as a view toggle.
-const Dashboard   = lazy(() => import('./modules/Dashboard'));
-const Budgets     = lazy(() => import('./modules/Budgets'));
-const Investments = lazy(() => import('./modules/Investments'));
-const CalendarMod = lazy(() => import('./modules/CalendarView'));
-const Debt        = lazy(() => import('./modules/Debt'));
-
-const MODULES = {
-  dashboard:   Dashboard,
-  budgets:     Budgets,
-  investments: Investments,
-  calendar:    CalendarMod,
-  debt:        Debt,
-};
+import { getWorkspace } from './workspaces/registry';
 
 const slide = {
   initial: { opacity: 0, y: 8 },
@@ -37,29 +30,58 @@ const slide = {
 export default function App() {
   const theme = useStore(selectTheme);
   const activeTab = useStore(selectActiveTab);
-  const Module = MODULES[activeTab] || Dashboard;
+  const workspace = useStore((s) => s.app.workspace);
+  const setActiveTab = useStore((s) => s.setActiveTab);
 
+  const ws = getWorkspace(workspace);
+  const Module = ws.modules[activeTab] || ws.modules[ws.defaultTab];
+
+  // ─── Theme class on <html> ──────────────────────────────
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
   }, [theme]);
+
+  // ─── Accent color CSS vars per workspace ────────────────
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty('--workspace-accent',    ws.accent.primary);
+    root.style.setProperty('--workspace-accent-fg', ws.accent.primaryFg);
+    root.style.setProperty('--workspace-accent-soft', ws.accent.soft);
+    root.setAttribute('data-workspace', ws.id);
+  }, [ws]);
+
+  // ─── Reset tab when switching to a workspace that doesn't
+  //     have the current tab. Prevents black screen if user
+  //     was on "investments" in Personal and switches to AVS.
+  useEffect(() => {
+    if (!ws.modules[activeTab]) {
+      setActiveTab(ws.defaultTab);
+    }
+  }, [workspace, ws, activeTab, setActiveTab]);
 
   return (
     <div className="min-h-screen font-sans">
       <Header />
 
-      <div className="max-w-2xl mx-auto px-5 pt-3">
-        <DebtPill />
-      </div>
+      {/* DebtPill is Personal-only; hide in AVS */}
+      {workspace === 'personal' && (
+        <div className="max-w-2xl mx-auto px-5 pt-3">
+          <DebtPill />
+        </div>
+      )}
 
       <AnimatePresence mode="wait">
-        <motion.div key={activeTab} {...slide}>
+        <motion.div key={`${workspace}:${activeTab}`} {...slide}>
           <Suspense fallback={<ModuleFallback />}>
             <Module />
           </Suspense>
         </motion.div>
       </AnimatePresence>
 
-      <QuickAdd />
+      {/* QuickAdd is Personal-only for now; AVS gets its own action
+          surfaces inside each module (5b+). */}
+      {workspace === 'personal' && <QuickAdd />}
+
       <BottomNav />
 
       <SearchOverlay />
