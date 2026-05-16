@@ -1,15 +1,18 @@
 // src/components/Header.jsx
+// Tier 5a — workspace switcher fully wired to registry
+//
+// Changes from previous version:
+//   • WORKSPACES constant removed — pulled from registry instead
+//   • Switcher pill uses active workspace's accent color as background
+//   • Switching workspaces sets the workspace's defaultTab automatically
+//
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, Sun, Moon, Check, Lock, Search, Repeat, Settings as SettingsIcon } from 'lucide-react';
+import { ChevronDown, Sun, Moon, Check, Search, Repeat, Settings as SettingsIcon } from 'lucide-react';
 import { useStore, selectTheme, selectBaseCurrency } from '../store/useStore';
 import { CURRENCIES } from '../lib/currency';
 import SchedulesManager from './SchedulesManager';
-
-const WORKSPACES = [
-  { id: 'personal', label: 'Personal',         sublabel: 'Finance',          enabled: true },
-  { id: 'business', label: 'AVS Solution HT',  sublabel: 'Business · soon',  enabled: false },
-];
+import { WORKSPACE_LIST, getWorkspace } from '../workspaces/registry';
 
 export default function Header() {
   const [wOpen, setWOpen] = useState(false);
@@ -17,6 +20,7 @@ export default function Header() {
   const wRef = useRef(null);
   const workspace = useStore((s) => s.app.workspace);
   const setWorkspace = useStore((s) => s.setWorkspace);
+  const setActiveTab = useStore((s) => s.setActiveTab);
   const theme = useStore(selectTheme);
   const toggleTheme = useStore((s) => s.toggleTheme);
   const baseCurrency = useStore(selectBaseCurrency);
@@ -24,7 +28,7 @@ export default function Header() {
   const setSearchOpen = useStore((s) => s.setSearchOpen);
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
 
-  const active = WORKSPACES.find((w) => w.id === workspace) || WORKSPACES[0];
+  const active = getWorkspace(workspace);
 
   useEffect(() => {
     const onClick = (e) => {
@@ -33,6 +37,17 @@ export default function Header() {
     document.addEventListener('mousedown', onClick);
     return () => document.removeEventListener('mousedown', onClick);
   }, []);
+
+  const handleSwitchWorkspace = (id) => {
+    if (id === workspace) {
+      setWOpen(false);
+      return;
+    }
+    const target = getWorkspace(id);
+    setWorkspace(id);
+    setActiveTab(target.defaultTab);
+    setWOpen(false);
+  };
 
   const cycleBase = () => {
     const order = ['USD', 'HTG', 'HTD'];
@@ -48,8 +63,15 @@ export default function Header() {
             onClick={() => setWOpen((v) => !v)}
             className="flex items-center gap-2.5 px-2 py-1.5 -ml-2 rounded-xl hover:bg-[var(--surface)] transition-colors"
           >
-            <div className="w-7 h-7 rounded-lg bg-ink-900 dark:bg-ink-50 flex items-center justify-center">
-              <span className="font-display text-base text-ink-50 dark:text-ink-900 leading-none">
+            {/* Workspace icon — tinted with that workspace's accent */}
+            <div
+              className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors"
+              style={{
+                backgroundColor: active.accent.primary,
+                color: active.accent.primaryFg,
+              }}
+            >
+              <span className="font-display text-base leading-none">
                 {active.label[0]}
               </span>
             </div>
@@ -70,15 +92,19 @@ export default function Header() {
                 className="absolute top-full left-0 mt-2 w-64 surface border rounded-2xl shadow-xl overflow-hidden"
               >
                 <div className="p-1.5">
-                  {WORKSPACES.map((w) => (
+                  {WORKSPACE_LIST.map((w) => (
                     <button
-                      key={w.id} disabled={!w.enabled}
-                      onClick={() => { if (w.enabled) { setWorkspace(w.id); setWOpen(false); } }}
-                      className={`w-full flex items-center gap-3 px-2.5 py-2 rounded-lg text-left transition-colors ${
-                        w.enabled ? 'hover:bg-[var(--bg)] cursor-pointer' : 'opacity-50 cursor-not-allowed'
-                      }`}
+                      key={w.id}
+                      onClick={() => handleSwitchWorkspace(w.id)}
+                      className="w-full flex items-center gap-3 px-2.5 py-2 rounded-lg text-left transition-colors hover:bg-[var(--bg)] cursor-pointer"
                     >
-                      <div className="w-8 h-8 rounded-lg bg-[var(--bg)] flex items-center justify-center">
+                      <div
+                        className="w-8 h-8 rounded-lg flex items-center justify-center"
+                        style={{
+                          backgroundColor: w.accent.primary,
+                          color: w.accent.primaryFg,
+                        }}
+                      >
                         <span className="font-display text-base">{w.label[0]}</span>
                       </div>
                       <div className="flex-1 min-w-0">
@@ -86,7 +112,6 @@ export default function Header() {
                         <div className="text-[11px] text-muted">{w.sublabel}</div>
                       </div>
                       {w.id === workspace && <Check size={14} className="text-muted" />}
-                      {!w.enabled && <Lock size={12} className="text-muted" />}
                     </button>
                   ))}
                 </div>
