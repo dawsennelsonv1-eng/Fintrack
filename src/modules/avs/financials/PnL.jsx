@@ -10,7 +10,7 @@ import { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   TrendingUp, TrendingDown, ChevronRight, Package,
-  Coins, Users, Megaphone,
+  Coins, Users, Megaphone, Receipt,
 } from 'lucide-react';
 import { useStore } from '../../../store/useStore';
 import { getWorkspace } from '../../../workspaces/registry';
@@ -71,6 +71,7 @@ export default function PnL() {
   const payroll = useStore((s) => s.business?.staffPayroll || []);
   const adSpend = useStore((s) => s.business?.adSpend || []);
   const cardCosts = useStore((s) => s.business?.cardCosts || []);
+  const businessExpenses = useStore((s) => s.business?.businessExpenses || []);
 
   const pnl = useMemo(() => {
     const r = periodRange(period);
@@ -123,18 +124,28 @@ export default function PnL() {
       adSpendTotal += amtHTG;
     });
 
+    let expensesTotal = 0;
+    businessExpenses.forEach((e) => {
+      const d = parseDate(e.date);
+      if (!inR(d)) return;
+      const amtHTG = e.currency === 'USD'
+        ? (Number(e.amount) || 0) * HTG_PER_USD
+        : (Number(e.amount) || 0);
+      expensesTotal += amtHTG;
+    });
+
     const grossProfit = revenue - cogs;
-    const opCosts = commissionsPaid + payrollPaid + adSpendTotal;
+    const opCosts = commissionsPaid + payrollPaid + adSpendTotal + expensesTotal;
     const netProfit = grossProfit - opCosts;
     const margin = revenue > 0 ? (netProfit / revenue) * 100 : 0;
 
     return {
       revenue, cogs, cards,
-      commissionsPaid, payrollPaid, adSpendTotal,
+      commissionsPaid, payrollPaid, adSpendTotal, expensesTotal,
       grossProfit, opCosts, netProfit, margin,
       label: r.label,
     };
-  }, [period, leads, commissions, payroll, adSpend, cardCosts]);
+  }, [period, leads, commissions, payroll, adSpend, cardCosts, businessExpenses]);
 
   const setActiveTab = useStore((s) => s.setActiveTab);
 
@@ -239,6 +250,13 @@ export default function PnL() {
           accent={accent}
         />
         <PnLRow
+          label="Operating expenses"
+          value={-pnl.expensesTotal}
+          kind="negative"
+          icon={Receipt}
+          accent={accent}
+        />
+        <PnLRow
           label={pnl.netProfit >= 0 ? 'Net profit' : 'Net loss'}
           value={pnl.netProfit}
           kind="total"
@@ -258,6 +276,7 @@ export default function PnL() {
               { label: 'Commissions', value: pnl.commissionsPaid, color: '#d4a942' },
               { label: 'Payroll', value: pnl.payrollPaid, color: '#5b8def' },
               { label: 'Ad spend', value: pnl.adSpendTotal, color: '#9b59b6' },
+              { label: 'Expenses', value: pnl.expensesTotal, color: '#e07a5f' },
               { label: pnl.netProfit >= 0 ? 'Profit' : 'Loss', value: Math.abs(pnl.netProfit), color: pnl.netProfit >= 0 ? '#3d8b5f' : '#c2452f' },
             ]}
             total={pnl.revenue}
