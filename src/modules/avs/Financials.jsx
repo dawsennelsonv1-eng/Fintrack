@@ -1,13 +1,18 @@
 // src/modules/avs/Financials.jsx
-// Tier 5f-salaries — Financials hub
+// Tier 5f-finalize — AVS Financials hub v2
 //
 // Sub-tabs:
-//   • Salaries — LIVE in this tier (commissions, payroll, content adherence)
-//   • P&L      — placeholder (next tier)
-//   • Debts    — placeholder (next tier, reuse Personal Debt module)
-//   • Expenses — placeholder (next tier)
-//   • History  — placeholder (next tier)
-//   • Transfer — placeholder (cross-workspace, next tier)
+//   • Salaries — already LIVE from Tier 5f-salaries
+//   • P&L      — LIVE in this tier (full revenue/cost breakdown)
+//   • History  — LIVE (aggregated log of all AVS money events)
+//   • Transfer — LIVE (cross-workspace transfer to/from Personal)
+//   • Debts    — placeholder (deferred — see note)
+//   • Expenses — placeholder (deferred — see note)
+//
+// Note: Debts and Expenses are deferred to keep this ship low-risk.
+// They both require either Code.gs schema changes or careful filtering
+// of Personal-store entities, and that's risky to batch with the live
+// Transfer logic that writes across workspace stores.
 //
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -16,21 +21,23 @@ import {
 } from 'lucide-react';
 import { getWorkspace } from '../../workspaces/registry';
 import Salaries from './financials/Salaries';
+import PnL from './financials/PnL';
+import HistoryView from './financials/History';
+import Transfer from './financials/Transfer';
 import FinancialsPlaceholder from './financials/_Placeholder';
 
 const TABS = [
   { id: 'salaries',  label: 'Salaries', icon: Users,         live: true },
-  { id: 'pnl',       label: 'P&L',      icon: PieChart,      live: false },
+  { id: 'pnl',       label: 'P&L',      icon: PieChart,      live: true },
+  { id: 'history',   label: 'History',  icon: History,       live: true },
+  { id: 'transfer',  label: 'Transfer', icon: ArrowLeftRight, live: true },
   { id: 'debts',     label: 'Debts',    icon: CreditCard,    live: false },
   { id: 'expenses',  label: 'Expenses', icon: Receipt,       live: false },
-  { id: 'history',   label: 'History',  icon: History,       live: false },
-  { id: 'transfer',  label: 'Transfer', icon: ArrowLeftRight, live: false },
 ];
 
 export default function AvsFinancials() {
   const [sub, setSub] = useState('salaries');
   const accent = getWorkspace('avs').accent;
-  const activeTab = TABS.find((t) => t.id === sub);
 
   return (
     <div className="max-w-2xl mx-auto px-4 pt-4 pb-32">
@@ -39,7 +46,6 @@ export default function AvsFinancials() {
         <p className="text-xs text-muted mt-0.5">AVS Solution HT — money in, money out</p>
       </div>
 
-      {/* Sub-tab strip — horizontal scroll on phones */}
       <div className="overflow-x-auto -mx-4 px-4 mb-4">
         <div className="flex gap-1.5" style={{ minWidth: 'min-content' }}>
           {TABS.map((t) => {
@@ -74,7 +80,6 @@ export default function AvsFinancials() {
         </div>
       </div>
 
-      {/* Body */}
       <AnimatePresence mode="wait">
         <motion.div
           key={sub}
@@ -84,20 +89,15 @@ export default function AvsFinancials() {
           transition={{ duration: 0.18 }}
         >
           {sub === 'salaries' && <Salaries />}
-          {sub === 'pnl' && (
-            <FinancialsPlaceholder
-              icon={PieChart}
-              title="Profit & Loss"
-              tier="next"
-              description="Period revenue − COGS − expenses − commissions = net profit. Toggle: month / quarter / year. Live data from your leads + ad spend + commissions."
-            />
-          )}
+          {sub === 'pnl' && <PnL />}
+          {sub === 'history' && <HistoryView />}
+          {sub === 'transfer' && <Transfer />}
           {sub === 'debts' && (
             <FinancialsPlaceholder
               icon={CreditCard}
               title="Debts"
               tier="next"
-              description="Money you owe (suppliers, Gemini Express, etc.) + money owed to you (client deposits, balances). Same component as Personal Debt module, scoped to AVS."
+              description="Money you owe (suppliers, Gemini Express) + money owed to you (client deposits). Deferred to next ship to avoid schema churn during testing window."
             />
           )}
           {sub === 'expenses' && (
@@ -105,23 +105,7 @@ export default function AvsFinancials() {
               icon={Receipt}
               title="Operating expenses"
               tier="next"
-              description="Recurring costs (internet, phone, rent) + one-off costs (equipment). Ad spend auto-pulled from Ads module. Recurring engine handles the monthly schedule."
-            />
-          )}
-          {sub === 'history' && (
-            <FinancialsPlaceholder
-              icon={History}
-              title="Transaction history"
-              tier="next"
-              description="Full log of all AVS money movements: card sales, commissions paid, expenses, transfers. Searchable, filterable, exportable to CSV."
-            />
-          )}
-          {sub === 'transfer' && (
-            <FinancialsPlaceholder
-              icon={ArrowLeftRight}
-              title="Cross-workspace transfer"
-              tier="next"
-              description="One button creates paired transactions: AVS → Personal (owner draw) or Personal → AVS (capital injection). Net worth stays correct across both workspaces."
+              description="Internet, phone, rent — recurring business costs. Deferred to next ship; for now log via the bank-funded Personal expenses if needed."
             />
           )}
         </motion.div>
