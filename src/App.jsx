@@ -1,11 +1,11 @@
 // src/App.jsx
-// Tier 5a — workspace-aware module routing
+// Tier 5g — adds CombinedWealthStrip below header
 //
-// Changes from previous version:
-//   • Module map no longer hard-coded; pulled from active workspace's registry
-//   • Auto-resets activeTab to workspace's defaultTab when switching workspaces
-//     if the current tab doesn't exist in the new workspace
-//   • Applies workspace accent color as CSS variable on the root element
+// Changes from Tier 5a:
+//   • CombinedWealthStrip now renders between Header and DebtPill
+//   • Strip shows both workspaces' key money number simultaneously
+//   • Tapping either side jumps to that workspace's dashboard
+//   • DebtPill still appears below the strip (Personal only)
 //
 import { useEffect, Suspense } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -18,6 +18,7 @@ import { UndoToast } from './components/TxActions';
 import InstallPrompt from './components/InstallPrompt';
 import SearchOverlay from './components/SearchOverlay';
 import Settings from './components/Settings';
+import CombinedWealthStrip from './components/CombinedWealthStrip';
 import { getWorkspace } from './workspaces/registry';
 
 const slide = {
@@ -36,12 +37,10 @@ export default function App() {
   const ws = getWorkspace(workspace);
   const Module = ws.modules[activeTab] || ws.modules[ws.defaultTab];
 
-  // ─── Theme class on <html> ──────────────────────────────
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
   }, [theme]);
 
-  // ─── Accent color CSS vars per workspace ────────────────
   useEffect(() => {
     const root = document.documentElement;
     root.style.setProperty('--workspace-accent',    ws.accent.primary);
@@ -50,9 +49,6 @@ export default function App() {
     root.setAttribute('data-workspace', ws.id);
   }, [ws]);
 
-  // ─── Reset tab when switching to a workspace that doesn't
-  //     have the current tab. Prevents black screen if user
-  //     was on "investments" in Personal and switches to AVS.
   useEffect(() => {
     if (!ws.modules[activeTab]) {
       setActiveTab(ws.defaultTab);
@@ -63,12 +59,11 @@ export default function App() {
     <div className="min-h-screen font-sans">
       <Header />
 
-      {/* DebtPill is Personal-only; hide in AVS */}
-      {workspace === 'personal' && (
-        <div className="max-w-2xl mx-auto px-5 pt-3">
-          <DebtPill />
-        </div>
-      )}
+      {/* Tier 5g — Combined wealth strip below header, above DebtPill */}
+      <div className="max-w-2xl mx-auto px-5 pt-3 space-y-2">
+        <CombinedWealthStrip />
+        {workspace === 'personal' && <DebtPill />}
+      </div>
 
       <AnimatePresence mode="wait">
         <motion.div key={`${workspace}:${activeTab}`} {...slide}>
@@ -78,8 +73,6 @@ export default function App() {
         </motion.div>
       </AnimatePresence>
 
-      {/* QuickAdd is Personal-only for now; AVS gets its own action
-          surfaces inside each module (5b+). */}
       {workspace === 'personal' && <QuickAdd />}
 
       <BottomNav />
