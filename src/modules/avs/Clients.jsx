@@ -1,17 +1,17 @@
 // src/modules/avs/Clients.jsx
-// Tier 5c — Clients module
+// Tier 5c + Tier 5g — Clients module with long-press status menu
 //
 // Three views:
-//   • Kanban — columns by leadStatus, drag cards to update status
+//   • Kanban — columns by leadStatus; tap = open detail, long-press = quick status menu
 //   • List   — searchable filterable table
 //   • Detail — full lead edit form, opened on tap
 //
 // Data source: useStore().business.leads (synced live from SALES_PIPELINE
 // via businessSlice.hydrateBusinessFromServer)
 //
-// "Clients" merges leads + completed clients into one searchable surface
-// per Christian's request. The kanban surfaces in-flight leads; the
-// "Clients" filter pill surfaces only ✅ Terminé entries.
+// Long-press (450ms) on a kanban card surfaces a quick-status bottom sheet
+// so you can move a lead between statuses without opening the full detail.
+// Faster than drag-and-drop on mobile, more reliable than touch-DnD.
 //
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -259,32 +259,163 @@ function KanbanView({ leads, onOpen }) {
 
 function KanbanCard({ lead, onOpen }) {
   const accent = ws().accent;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const longPressTimer = useRef(null);
+  const longPressFired = useRef(false);
+
+  const handlePressStart = () => {
+    longPressFired.current = false;
+    longPressTimer.current = setTimeout(() => {
+      longPressFired.current = true;
+      setMenuOpen(true);
+      // Haptic feedback (no-op on devices without vibrate)
+      if (navigator.vibrate) navigator.vibrate(20);
+    }, 450);
+  };
+
+  const handlePressEnd = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
+
+  const handleClick = (e) => {
+    // Suppress click if long-press fired
+    if (longPressFired.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      longPressFired.current = false;
+      return;
+    }
+    onOpen();
+  };
+
   return (
-    <button
-      onClick={onOpen}
-      className="w-full text-left bg-[var(--bg)] rounded-xl p-2.5 border hover:shadow-sm active:scale-[0.98] transition-all"
-      style={{ borderColor: 'var(--border)' }}
-    >
-      <div className="font-medium text-xs leading-tight truncate">
-        {lead.client || '(no name)'}
-      </div>
-      <div className="text-[10px] text-muted mt-0.5 truncate">
-        {lead.pack || lead.cardType || '—'}
-      </div>
-      <div className="flex items-center justify-between mt-2">
-        <span className="text-[10px] text-muted">
-          {fmtDate(lead.date)}
-        </span>
-        {lead.totalPrice > 0 && (
-          <span
-            className="text-[10px] font-medium px-1.5 py-0.5 rounded-md"
-            style={{ backgroundColor: accent.soft, color: accent.primary }}
-          >
-            {lead.totalPrice}
+    <>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={handleClick}
+        onPointerDown={handlePressStart}
+        onPointerUp={handlePressEnd}
+        onPointerCancel={handlePressEnd}
+        onPointerLeave={handlePressEnd}
+        onContextMenu={(e) => e.preventDefault()}
+        className="w-full text-left bg-[var(--bg)] rounded-xl p-2.5 border hover:shadow-sm active:scale-[0.98] transition-all cursor-pointer select-none"
+        style={{ borderColor: 'var(--border)' }}
+      >
+        <div className="font-medium text-xs leading-tight truncate">
+          {lead.client || '(no name)'}
+        </div>
+        <div className="text-[10px] text-muted mt-0.5 truncate">
+          {lead.pack || lead.cardType || '—'}
+        </div>
+        <div className="flex items-center justify-between mt-2">
+          <span className="text-[10px] text-muted">
+            {fmtDate(lead.date)}
           </span>
-        )}
+          {lead.totalPrice > 0 && (
+            <span
+              className="text-[10px] font-medium px-1.5 py-0.5 rounded-md"
+              style={{ backgroundColor: accent.soft, color: accent.primary }}
+            >
+              {lead.totalPrice}
+            </span>
+          )}
+        </div>
       </div>
-    </button>
+
+      <AnimatePresence>
+        {menuOpen && (
+          <QuickStatusMenu
+            lead={lead}
+            onClose={() => setMenuOpen(false)}
+          />
+        )}
+      </AnimatePresence>
+    </>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// QUICK STATUS MENU (long-press)
+// ════════════════════════════════════════════════════════════════════
+function QuickStatusMenu({ lead, onClose }) {
+  const statuses = ws().leadStatuses;
+  const updateLead = useStore((s) => s.updateLead);
+  const accent = ws().accent;
+
+  const setStatus = (newStatus) => {
+    if (newStatus !== lead.leadStatus) {
+      updateLead(lead.id, { leadStatus: newStatus });
+      if (navigator.vibrate) navigator.vibrate(15);
+    }
+    onClose();
+  };
+
+  return (
+    <>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        onClick={onClose}
+        className="fixed inset-0 bg-black/40 z-50"
+      />
+      <motion.div
+        initial={{ y: '100%' }}
+        animate={{ y: 0 }}
+        exit={{ y: '100%' }}
+        transition={{ type: 'spring', damping: 32, stiffness: 320 }}
+        className="fixed inset-x-0 bottom-0 z-50 max-w-2xl mx-auto"
+      >
+        <div className="surface border-t rounded-t-3xl overflow-hidden mx-3 mb-3 rounded-3xl">
+          <div className="px-4 pt-4 pb-2">
+            <div className="text-[10px] uppercase tracking-wider text-muted font-semibold">
+              Move to status
+            </div>
+            <div className="font-medium text-sm mt-0.5 truncate">
+              {lead.client || '(no name)'}
+            </div>
+          </div>
+          <div className="px-2 pb-2">
+            {statuses.map((s) => {
+              const isCurrent = s.label === lead.leadStatus;
+              return (
+                <button
+                  key={s.id}
+                  onClick={() => setStatus(s.label)}
+                  disabled={isCurrent}
+                  className={`w-full flex items-center gap-3 px-3 py-3 rounded-xl transition-colors ${
+                    isCurrent ? 'opacity-50' : 'hover:bg-[var(--bg)] active:bg-[var(--bg)]'
+                  }`}
+                >
+                  <span
+                    className="w-2 h-2 rounded-full shrink-0"
+                    style={{ backgroundColor: s.color }}
+                  />
+                  <span className="flex-1 text-left text-sm">{s.label}</span>
+                  {isCurrent && (
+                    <span className="text-[10px] text-muted">current</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          <button
+            onClick={onClose}
+            className="w-full py-3 text-sm border-t font-medium"
+            style={{
+              color: 'var(--text-muted, #7a8a8c)',
+              borderColor: 'var(--border)',
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      </motion.div>
+    </>
   );
 }
 
