@@ -1,16 +1,8 @@
 // src/workspaces/avs.js
 //
-// AVS Solution HT workspace config — cards business.
-//
-// Bottom nav (5 tabs, mobile-optimized):
-//   • Home       — graphs, KPIs, conversion funnel
-//   • Clients    — merged leads + clients (filter by status)
-//   • Calendar   — RDV schedule
-//   • Ads        — campaign spend, ROAS, lead source attribution
-//   • Financials — debts owed/receivable, expenses, salaries, P&L, full history
-//
-// History is a TAB inside Financials, not a top-level nav.
-// Debt is a TAB inside Financials, not a top-level nav.
+// Tier 5c — same registry shape as 5a; modules now point to real
+// implementations instead of placeholders for Clients, Ads, Financials.
+// Dashboard and Calendar still placeholder (next tier).
 //
 import { lazy } from 'react';
 
@@ -26,15 +18,10 @@ export default {
   sublabel: 'Cards · Business',
   enabled: true,
 
-  // Deep forest green — reads as serious money, pairs cleanly with
-  // cream/ink. Used in:
-  //   • header workspace pill (background)
-  //   • active bottom-nav tab indicator
-  //   • accent dots, focus rings, "active" highlights inside AVS modules
   accent: {
-    primary:   '#2D5F4F',   // forest green
-    primaryFg: '#fffaf2',   // cream
-    soft:      '#2D5F4F22', // 13% alpha for subtle washes
+    primary:   '#2D5F4F',
+    primaryFg: '#fffaf2',
+    soft:      '#2D5F4F22',
   },
 
   tabs: [
@@ -55,11 +42,6 @@ export default {
 
   defaultTab: 'dashboard',
 
-  // ─── Canonical status enums for cards funnel ──────────────
-  //
-  // These match the existing Google Sheet exactly. The kanban in
-  // Clients module (Tier 5c) renders columns in this order.
-  //
   leadStatuses: [
     { id: 'todo',        label: '🔴 À Faire',       color: '#c2452f' },
     { id: 'rdv',         label: '📅 Rdv Fixé',      color: '#5b8def' },
@@ -74,20 +56,17 @@ export default {
     { id: 'done',  label: '✅ Fait',       color: '#3d8b5f' },
   ],
 
-  // Card types observed in the data
   cardTypes: ['Meru', 'Other'],
 
-  // Pack options observed in the data
   packOptions: ['Physique', 'Virtuel', 'Physique + Virtuel'],
 
-  // Staff roles for AVS (used by commissions module in 5f)
-  staffRoles: ['Sales', 'Ops', 'Admin'],
+  staffRoles: ['Sales', 'Ops', 'Content', 'Admin'],
 
-  // Default staff seed — matches your team
   defaultStaff: [
-    { name: 'Marc',      role: 'Ops',   commissionType: 'per_card' },
-    { name: 'Jémima',    role: 'Sales', commissionType: 'per_card' },
-    { name: 'Christelle', role: 'Sales', commissionType: 'per_card' },
-    { name: 'Dawsen',    role: 'Admin', commissionType: 'salary' },
+    { name: 'Marc',      role: 'Ops',     commissionType: 'per_card' },
+    { name: 'Jémima',    role: 'Sales',   commissionType: 'biweekly' },
+    { name: 'Christelle', role: 'Sales',  commissionType: 'biweekly' },
+    { name: 'Sarah',     role: 'Content', commissionType: 'monthly' },
+    { name: 'Dawsen',    role: 'Admin',   commissionType: 'owner' },
   ],
 };
