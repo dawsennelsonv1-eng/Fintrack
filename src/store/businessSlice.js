@@ -117,6 +117,11 @@ export const businessSlice = (set, get) => ({
     contentAdherence:  [],
     staffPayroll:      [],
 
+    // ─── v9 additions (Tier 5f-final) ───────────────────────
+    businessDebts:       [],
+    businessDebtEvents:  [],
+    businessExpenses:    [],
+
     // ─── Sync state (AVS-scoped) ────────────────────────────
     queue:        [],
     lastSyncAt:   null,
@@ -499,6 +504,165 @@ export const businessSlice = (set, get) => ({
   },
 
   // ═══════════════════════════════════════════════════════════
+  // BUSINESS DEBTS (v9)
+  // ═══════════════════════════════════════════════════════════
+  //
+  // AVS-scoped debts: suppliers you owe (Gemini Express, card supplier)
+  // and client deposits you owe back. Mirrors Personal's Debt module
+  // shape but separate so AVS P&L doesn't pollute Personal net worth.
+  //
+  addBusinessDebt: (input) => {
+    const debt = {
+      id: input.id || uid('bdebt'),
+      creditor: input.creditor || '',
+      principal: Number(input.principal) || 0,
+      currency: input.currency || 'HTG',
+      direction: input.direction || 'owe',       // 'owe' | 'receivable'
+      kind: input.kind || 'supplier',
+      dueDate: input.dueDate || '',
+      status: input.status || 'open',
+      interestRate: Number(input.interestRate) || 0,
+      interestType: input.interestType || 'simple',
+      notes: input.notes || '',
+      createdAt: nowISO(),
+      updatedAt: nowISO(),
+      _pending: true,
+    };
+    set((s) => ({
+      business: { ...s.business, businessDebts: [debt, ...s.business.businessDebts] },
+    }));
+    enqueueAvs(set, get, 'businessDebt', 'create', stripMeta(debt));
+    return debt;
+  },
+
+  updateBusinessDebt: (id, patch) => {
+    let updated = null;
+    set((s) => ({
+      business: {
+        ...s.business,
+        businessDebts: s.business.businessDebts.map((d) => {
+          if (d.id !== id) return d;
+          updated = { ...d, ...patch, updatedAt: nowISO(), _pending: true };
+          return updated;
+        }),
+      },
+    }));
+    if (updated) enqueueAvs(set, get, 'businessDebt', 'update', stripMeta(updated));
+    return updated;
+  },
+
+  removeBusinessDebt: (id) => {
+    set((s) => ({
+      business: {
+        ...s.business,
+        businessDebts: s.business.businessDebts.filter((d) => d.id !== id),
+      },
+    }));
+    enqueueAvs(set, get, 'businessDebt', 'delete', { id });
+  },
+
+  // Log a repayment against a debt — appends to BUSINESS_DEBT_EVENTS
+  // and (if it brings principal to zero) marks the debt paid.
+  repayBusinessDebt: (debtId, amount, notes = '') => {
+    const debt = get().business.businessDebts.find((d) => d.id === debtId);
+    if (!debt) return null;
+    const amt = Number(amount) || 0;
+    if (amt <= 0) return null;
+    const events = get().business.businessDebtEvents.filter((e) => e.debtId === debtId);
+    const totalRepaid = events
+      .filter((e) => e.type === 'repayment')
+      .reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const balanceBefore = (Number(debt.principal) || 0) - totalRepaid;
+    const balanceAfter = Math.max(0, balanceBefore - amt);
+
+    const event = {
+      id: uid('bdebte'),
+      debtId,
+      type: 'repayment',
+      amount: amt,
+      currency: debt.currency,
+      balanceAfter,
+      interestPaid: 0,
+      notes,
+      date: nowISO(),
+      createdAt: nowISO(),
+      _pending: true,
+    };
+
+    set((s) => ({
+      business: {
+        ...s.business,
+        businessDebtEvents: [event, ...s.business.businessDebtEvents],
+      },
+    }));
+    enqueueAvs(set, get, 'businessDebtEvent', 'create', stripMeta(event));
+
+    // Auto-mark paid if fully repaid
+    if (balanceAfter === 0 && debt.status !== 'paid') {
+      get().updateBusinessDebt(debtId, { status: 'paid' });
+    } else if (balanceAfter < (Number(debt.principal) || 0) && debt.status === 'open') {
+      get().updateBusinessDebt(debtId, { status: 'partial' });
+    }
+    return event;
+  },
+
+  // ═══════════════════════════════════════════════════════════
+  // BUSINESS EXPENSES (v9)
+  // ═══════════════════════════════════════════════════════════
+  //
+  // Operating expenses: rent, internet, phone, equipment, transport.
+  // Picked up by the P&L calculation as a cost line.
+  //
+  addBusinessExpense: (input) => {
+    const exp = {
+      id: input.id || uid('bexp'),
+      date: input.date || nowISO(),
+      category: input.category || 'other',
+      description: input.description || '',
+      amount: Number(input.amount) || 0,
+      currency: input.currency || 'HTG',
+      recurring: input.recurring || 'one-off',
+      paidTo: input.paidTo || '',
+      paymentMethod: input.paymentMethod || '',
+      notes: input.notes || '',
+      createdAt: nowISO(),
+      updatedAt: nowISO(),
+      _pending: true,
+    };
+    set((s) => ({
+      business: { ...s.business, businessExpenses: [exp, ...s.business.businessExpenses] },
+    }));
+    enqueueAvs(set, get, 'businessExpense', 'create', stripMeta(exp));
+    return exp;
+  },
+
+  updateBusinessExpense: (id, patch) => {
+    let updated = null;
+    set((s) => ({
+      business: {
+        ...s.business,
+        businessExpenses: s.business.businessExpenses.map((e) => {
+          if (e.id !== id) return e;
+          updated = { ...e, ...patch, updatedAt: nowISO(), _pending: true };
+          return updated;
+        }),
+      },
+    }));
+    if (updated) enqueueAvs(set, get, 'businessExpense', 'update', stripMeta(updated));
+    return updated;
+  },
+
+  removeBusinessExpense: (id) => {
+    set((s) => ({
+      business: {
+        ...s.business,
+        businessExpenses: s.business.businessExpenses.filter((e) => e.id !== id),
+      },
+    }));
+    enqueueAvs(set, get, 'businessExpense', 'delete', { id });
+  },
+
+  // ═══════════════════════════════════════════════════════════
   // HYDRATE — fetch everything from AVS server
   // ═══════════════════════════════════════════════════════════
   //
@@ -524,6 +688,9 @@ export const businessSlice = (set, get) => ({
           fxRates:           mergeById(local.fxRates, data.fxRates),
           contentAdherence:  mergeById(local.contentAdherence, data.contentAdherence),
           staffPayroll:      mergeById(local.staffPayroll, data.staffPayroll),
+          businessDebts:       mergeById(local.businessDebts, data.businessDebts),
+          businessDebtEvents:  mergeById(local.businessDebtEvents, data.businessDebtEvents),
+          businessExpenses:    mergeById(local.businessExpenses, data.businessExpenses),
           lastSyncAt:        nowISO(),
           syncError:         null,
         },
@@ -568,6 +735,9 @@ export const businessSlice = (set, get) => ({
             cardCosts:         clearPending(s.business.cardCosts),
             staffPayroll:      clearPending(s.business.staffPayroll),
             contentAdherence:  clearPending(s.business.contentAdherence),
+            businessDebts:       clearPending(s.business.businessDebts),
+            businessDebtEvents:  clearPending(s.business.businessDebtEvents),
+            businessExpenses:    clearPending(s.business.businessExpenses),
             lastSyncAt:        nowISO(),
             syncError:         null,
             syncing:           false,
@@ -581,7 +751,8 @@ export const businessSlice = (set, get) => ({
         const data = await avsApi.fetchAll();
         const serverIds = new Set();
         ['leads', 'adSpend', 'staffCommissions', 'cardCosts',
-         'staffPayroll', 'contentAdherence', 'clients'].forEach((coll) => {
+         'staffPayroll', 'contentAdherence', 'clients',
+         'businessDebts', 'businessDebtEvents', 'businessExpenses'].forEach((coll) => {
           (data[coll] || []).forEach((r) => serverIds.add(r.id));
         });
         const survivors = queue.filter((op) => !serverIds.has(op.id));
