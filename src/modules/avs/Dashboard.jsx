@@ -1,17 +1,14 @@
 // src/modules/avs/Dashboard.jsx
-// Tier 5h — AVS Dashboard
+// Tier 5h v2 — AVS Dashboard with period toggle + profit/loss + paid vs organic
 //
-// Mobile-optimized graph-heavy home screen. 8 panels:
-//   1. Revenue MTD + vs last month delta
-//   2. Pending payouts (Marc + Sales + Sarah)
-//   3. Daily lead volume (30d, bar chart + 7d MA)
-//   4. Conversion funnel
-//   5. Top staff this period
-//   6. ROAS per campaign (top 5)
-//   7. Lead sources breakdown
-//   8. Sarah's content streak
+// Added in v2:
+//   • Period toggle: Today / Week / Month — drives all top stats
+//   • Profit/Loss panel for selected period
+//   • Paid vs Organic leads breakdown (FB/TikTok/IG ads vs organic posts)
+//   • Cards count for selected period
 //
-// All graphs use Recharts for consistency with Personal Dashboard.
+// Other panels unchanged from v1 (lead volume, funnel, top staff, ROAS,
+// sources, content streak).
 //
 import { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
@@ -20,16 +17,13 @@ import {
   Line, PieChart, Pie, Cell,
 } from 'recharts';
 import {
-  DollarSign, TrendingUp, TrendingDown, Coins,
-  ChevronRight, Clock,
+  DollarSign, TrendingUp, TrendingDown,
+  ChevronRight, Clock, Sparkles,
 } from 'lucide-react';
 import { useStore } from '../../store/useStore';
 import { getWorkspace } from '../../workspaces/registry';
 import {
   CONTENT_REQUIRED_POSTS_PER_DAY,
-  computeOpsCommission,
-  SALES_BIWEEKLY_HTG,
-  CONTENT_MONTHLY_HTG,
 } from '../../store/businessSlice';
 
 const ws = () => getWorkspace('avs');
@@ -53,41 +47,101 @@ function parseDate(v) {
   return isNaN(d) ? null : d;
 }
 
-function startOfMonth(d = new Date()) {
-  const x = new Date(d.getFullYear(), d.getMonth(), 1);
+function startOfDay(d = new Date()) {
+  const x = new Date(d); x.setHours(0, 0, 0, 0); return x;
+}
+function endOfDay(d = new Date()) {
+  const x = new Date(d); x.setHours(23, 59, 59, 999); return x;
+}
+function startOfWeek(d = new Date()) {
+  const x = new Date(d);
+  const day = x.getDay();
+  // Treat Monday as week start (more useful for business)
+  const diff = (day + 6) % 7;
+  x.setDate(x.getDate() - diff);
   x.setHours(0, 0, 0, 0);
   return x;
 }
-
+function startOfPrevWeek() {
+  const w = startOfWeek();
+  w.setDate(w.getDate() - 7);
+  return w;
+}
+function endOfPrevWeek() {
+  const w = startOfWeek();
+  w.setDate(w.getDate() - 1);
+  w.setHours(23, 59, 59, 999);
+  return w;
+}
+function startOfMonth(d = new Date()) {
+  const x = new Date(d.getFullYear(), d.getMonth(), 1);
+  x.setHours(0, 0, 0, 0); return x;
+}
 function endOfMonth(d = new Date()) {
   const x = new Date(d.getFullYear(), d.getMonth() + 1, 0);
-  x.setHours(23, 59, 59, 999);
-  return x;
+  x.setHours(23, 59, 59, 999); return x;
 }
-
 function startOfPrevMonth() {
   const d = new Date();
   return new Date(d.getFullYear(), d.getMonth() - 1, 1);
 }
-
 function endOfPrevMonth() {
   const d = new Date();
   const e = new Date(d.getFullYear(), d.getMonth(), 0);
-  e.setHours(23, 59, 59, 999);
-  return e;
+  e.setHours(23, 59, 59, 999); return e;
 }
-
+function startOfYesterday() {
+  const d = new Date(); d.setDate(d.getDate() - 1);
+  d.setHours(0, 0, 0, 0); return d;
+}
+function endOfYesterday() {
+  const d = new Date(); d.setDate(d.getDate() - 1);
+  d.setHours(23, 59, 59, 999); return d;
+}
 function daysAgo(n) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  d.setHours(0, 0, 0, 0);
-  return d;
+  const d = new Date(); d.setDate(d.getDate() - n);
+  d.setHours(0, 0, 0, 0); return d;
 }
 
 function fmtHTG(n) {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(Math.round(n));
+}
+
+// Returns { from, to, prevFrom, prevTo, label, prevLabel }
+function periodRange(period) {
+  const now = new Date();
+  switch (period) {
+    case 'today': return {
+      from: startOfDay(now), to: endOfDay(now),
+      prevFrom: startOfYesterday(), prevTo: endOfYesterday(),
+      label: 'today', prevLabel: 'yesterday',
+    };
+    case 'week': return {
+      from: startOfWeek(now), to: endOfDay(now),
+      prevFrom: startOfPrevWeek(), prevTo: endOfPrevWeek(),
+      label: 'this week', prevLabel: 'last week',
+    };
+    case 'month':
+    default: return {
+      from: startOfMonth(now), to: endOfMonth(now),
+      prevFrom: startOfPrevMonth(), prevTo: endOfPrevMonth(),
+      label: 'this month', prevLabel: 'last month',
+    };
+  }
+}
+
+// Classify a lead's source as paid / organic / other
+function classifySource(source) {
+  const s = String(source || '').toLowerCase();
+  if (s.includes('ads') || s.includes('ad ')) return 'paid';
+  if (s.includes('organic')) return 'organic';
+  if (s.includes('facebook') || s.includes('fb') || s.includes('instagram') || s.includes('ig') || s.includes('tiktok')) {
+    // unspecified paid/organic — most likely paid since you mostly run ads
+    return 'paid';
+  }
+  return 'other';
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -95,13 +149,14 @@ function fmtHTG(n) {
 // ════════════════════════════════════════════════════════════════════
 export default function AvsDashboard() {
   const accent = ws().accent;
+  const [period, setPeriod] = useState('month'); // 'today' | 'week' | 'month'
 
   return (
     <main className="max-w-2xl mx-auto px-5 pt-4 pb-32">
       <motion.section
         {...fadeUp}
         transition={{ duration: 0.5, ease }}
-        className="mb-5"
+        className="mb-4"
       >
         <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1">
           AVS Solution HT
@@ -109,66 +164,150 @@ export default function AvsDashboard() {
         <h1 className="font-display text-3xl leading-tight">Command center</h1>
       </motion.section>
 
-      <RevenueAndPayouts accent={accent} />
+      <PeriodToggle period={period} onChange={setPeriod} accent={accent} />
+      <PeriodStats period={period} accent={accent} />
+      <PaidVsOrganic period={period} accent={accent} />
+      <PendingPayouts accent={accent} />
       <DailyLeadVolume accent={accent} />
       <ConversionFunnel accent={accent} />
-      <TopStaff accent={accent} />
+      <TopStaff period={period} accent={accent} />
       <ROASRankings accent={accent} />
-      <LeadSources accent={accent} />
+      <LeadSources period={period} accent={accent} />
       <ContentStreak accent={accent} />
     </main>
   );
 }
 
 // ════════════════════════════════════════════════════════════════════
-// PANEL 1 + 2: REVENUE MTD + PENDING PAYOUTS
+// PERIOD TOGGLE
 // ════════════════════════════════════════════════════════════════════
-function RevenueAndPayouts({ accent }) {
+function PeriodToggle({ period, onChange, accent }) {
+  const opts = [
+    { id: 'today', label: 'Today' },
+    { id: 'week',  label: 'Week' },
+    { id: 'month', label: 'Month' },
+  ];
+  return (
+    <motion.section
+      {...fadeUp}
+      transition={{ duration: 0.5, ease, delay: 0.02 }}
+      className="mb-3"
+    >
+      <div className="surface border rounded-2xl p-1 grid grid-cols-3 gap-0.5">
+        {opts.map((o) => {
+          const active = period === o.id;
+          return (
+            <button
+              key={o.id}
+              onClick={() => onChange(o.id)}
+              className="py-2 rounded-xl text-xs font-medium"
+              style={active
+                ? { backgroundColor: accent.primary, color: accent.primaryFg }
+                : { color: 'var(--text-muted, #7a8a8c)' }
+              }
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+    </motion.section>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// PERIOD STATS — Revenue + Cards + Profit (driven by period toggle)
+// ════════════════════════════════════════════════════════════════════
+function PeriodStats({ period, accent }) {
   const leads = useStore((s) => s.business?.leads || []);
   const commissions = useStore((s) => s.business?.staffCommissions || []);
   const payroll = useStore((s) => s.business?.staffPayroll || []);
+  const adSpend = useStore((s) => s.business?.adSpend || []);
+  const cardCosts = useStore((s) => s.business?.cardCosts || []);
 
   const stats = useMemo(() => {
-    const monthStart = startOfMonth();
-    const monthEnd = endOfMonth();
-    const prevStart = startOfPrevMonth();
-    const prevEnd = endOfPrevMonth();
+    const r = periodRange(period);
 
-    let revenueMTD = 0, revenuePrev = 0, cardsMTD = 0;
+    const cogsFor = (lead) => {
+      const cost = cardCosts.find((c) =>
+        String(c.typeCarte).toLowerCase() === String(lead.cardType).toLowerCase() &&
+        String(c.pack).toLowerCase() === String(lead.pack).toLowerCase()
+      );
+      if (!cost) return 0;
+      const costHTG = cost.currency === 'USD'
+        ? Number(cost.supplierCost) * HTG_PER_USD
+        : Number(cost.supplierCost);
+      return costHTG;
+    };
+
+    const inRange = (d, from, to) => d && d >= from && d <= to;
+
+    let revenue = 0, prevRevenue = 0, cards = 0, prevCards = 0;
+    let totalCOGS = 0;
+
     leads.forEach((l) => {
       if (l.leadStatus !== '✅ Terminé') return;
       const paid = parseDate(l.datePaidFull) || parseDate(l.date);
-      if (!paid) return;
       const amt = Number(l.totalPrice) || 0;
-      if (paid >= monthStart && paid <= monthEnd) {
-        revenueMTD += amt;
-        cardsMTD += 1;
-      } else if (paid >= prevStart && paid <= prevEnd) {
-        revenuePrev += amt;
+      if (inRange(paid, r.from, r.to)) {
+        revenue += amt;
+        cards += 1;
+        totalCOGS += cogsFor(l);
+      } else if (inRange(paid, r.prevFrom, r.prevTo)) {
+        prevRevenue += amt;
+        prevCards += 1;
       }
     });
 
-    const pendingCommissions = commissions
-      .filter((c) => c.status === 'pending')
-      .reduce((s, c) => s + (Number(c.commissionAmount) || 0), 0);
-    const pendingPayroll = payroll
-      .filter((p) => p.status === 'pending')
-      .reduce((s, p) => s + (Number(p.amount) || 0), 0);
+    // Period costs (commissions paid + payroll paid + ad spend, all in HTG)
+    let commissionsPaid = 0;
+    commissions.forEach((c) => {
+      if (c.status !== 'paid') return;
+      const d = parseDate(c.paidDate);
+      if (inRange(d, r.from, r.to)) {
+        commissionsPaid += (Number(c.commissionAmount) || 0); // HTG
+      }
+    });
 
-    const delta = revenuePrev > 0
-      ? ((revenueMTD - revenuePrev) / revenuePrev) * 100
+    let payrollPaid = 0;
+    payroll.forEach((p) => {
+      if (p.status !== 'paid') return;
+      const d = parseDate(p.paidDate);
+      if (inRange(d, r.from, r.to)) {
+        const amtHTG = p.currency === 'USD'
+          ? (Number(p.amount) || 0) * HTG_PER_USD
+          : (Number(p.amount) || 0);
+        payrollPaid += amtHTG;
+      }
+    });
+
+    let adSpendTotal = 0;
+    adSpend.forEach((a) => {
+      const d = parseDate(a.date);
+      if (inRange(d, r.from, r.to)) {
+        const amtHTG = a.spendCurrency === 'USD'
+          ? (Number(a.spendAmount) || 0) * HTG_PER_USD
+          : (Number(a.spendAmount) || 0);
+        adSpendTotal += amtHTG;
+      }
+    });
+
+    const totalCosts = totalCOGS + commissionsPaid + payrollPaid + adSpendTotal;
+    const profit = revenue - totalCosts;
+    const profitPct = revenue > 0 ? (profit / revenue) * 100 : 0;
+
+    const revDelta = prevRevenue > 0
+      ? ((revenue - prevRevenue) / prevRevenue) * 100
       : null;
 
     return {
-      revenueMTD,
-      revenuePrev,
-      cardsMTD,
-      delta,
-      pendingTotal: pendingCommissions + pendingPayroll,
-      pendingCommissions,
-      pendingPayroll,
+      revenue, prevRevenue, revDelta,
+      cards, prevCards,
+      totalCosts, totalCOGS, commissionsPaid, payrollPaid, adSpendTotal,
+      profit, profitPct,
+      label: r.label, prevLabel: r.prevLabel,
     };
-  }, [leads, commissions, payroll]);
+  }, [period, leads, commissions, payroll, adSpend, cardCosts]);
 
   return (
     <motion.section
@@ -176,7 +315,7 @@ function RevenueAndPayouts({ accent }) {
       transition={{ duration: 0.5, ease, delay: 0.04 }}
       className="grid grid-cols-2 gap-3 mb-4"
     >
-      {/* Revenue MTD */}
+      {/* Revenue */}
       <div
         className="rounded-2xl p-4 border"
         style={{
@@ -192,61 +331,64 @@ function RevenueAndPayouts({ accent }) {
             <DollarSign size={12} />
           </div>
           <div className="text-[10px] uppercase tracking-wider text-muted font-semibold">
-            Revenue MTD
+            Revenue
           </div>
         </div>
         <div className="font-display text-2xl leading-tight">
-          {fmtHTG(stats.revenueMTD)}
+          {fmtHTG(stats.revenue)}
           <span className="text-xs text-muted font-sans ml-1">HTG</span>
         </div>
         <div className="flex items-center gap-1.5 mt-1.5 text-[11px]">
-          <span className="text-muted">{stats.cardsMTD} cards</span>
-          {stats.delta !== null && (
+          <span className="text-muted">{stats.cards} cards</span>
+          {stats.revDelta !== null && (
             <>
               <span className="text-muted">·</span>
               <span
                 className="flex items-center gap-0.5 font-medium"
-                style={{ color: stats.delta >= 0 ? '#3d8b5f' : '#c2452f' }}
+                style={{ color: stats.revDelta >= 0 ? '#3d8b5f' : '#c2452f' }}
               >
-                {stats.delta >= 0 ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
-                {Math.abs(stats.delta).toFixed(0)}%
+                {stats.revDelta >= 0 ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
+                {Math.abs(stats.revDelta).toFixed(0)}%
               </span>
             </>
           )}
         </div>
       </div>
 
-      {/* Pending payouts */}
-      <div className="surface border rounded-2xl p-4">
+      {/* Profit/Loss */}
+      <div
+        className="rounded-2xl p-4 border"
+        style={{
+          backgroundColor: stats.profit >= 0 ? '#3d8b5f15' : '#c2452f15',
+          borderColor: stats.profit >= 0 ? '#3d8b5f44' : '#c2452f44',
+        }}
+      >
         <div className="flex items-center gap-2 mb-1">
           <div
             className="w-6 h-6 rounded-lg flex items-center justify-center"
-            style={{ backgroundColor: '#d4a94222', color: '#d4a942' }}
+            style={{
+              backgroundColor: stats.profit >= 0 ? '#3d8b5f' : '#c2452f',
+              color: '#fff',
+            }}
           >
-            <Clock size={12} />
+            {stats.profit >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
           </div>
           <div className="text-[10px] uppercase tracking-wider text-muted font-semibold">
-            Owed staff
+            {stats.profit >= 0 ? 'Profit' : 'Loss'}
           </div>
         </div>
-        <div className="font-display text-2xl leading-tight">
-          {fmtHTG(stats.pendingTotal)}
+        <div
+          className="font-display text-2xl leading-tight"
+          style={{ color: stats.profit >= 0 ? '#3d8b5f' : '#c2452f' }}
+        >
+          {stats.profit >= 0 ? '' : '−'}{fmtHTG(Math.abs(stats.profit))}
           <span className="text-xs text-muted font-sans ml-1">HTG</span>
         </div>
-        <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-muted">
-          {stats.pendingCommissions > 0 && (
-            <>
-              <Coins size={10} />
-              <span>{fmtHTG(stats.pendingCommissions)} comm</span>
-            </>
+        <div className="text-[11px] text-muted mt-1.5">
+          {stats.revenue > 0 ? `${stats.profitPct.toFixed(0)}% margin` : 'no revenue'}
+          {stats.totalCosts > 0 && (
+            <> · {fmtHTG(stats.totalCosts)} costs</>
           )}
-          {stats.pendingPayroll > 0 && (
-            <>
-              {stats.pendingCommissions > 0 && <span>·</span>}
-              <span>{fmtHTG(stats.pendingPayroll)} payroll</span>
-            </>
-          )}
-          {stats.pendingTotal === 0 && <span>All paid</span>}
         </div>
       </div>
     </motion.section>
@@ -254,7 +396,250 @@ function RevenueAndPayouts({ accent }) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// PANEL 3: DAILY LEAD VOLUME (30d)
+// PAID VS ORGANIC LEADS (period-driven)
+// ════════════════════════════════════════════════════════════════════
+function PaidVsOrganic({ period, accent }) {
+  const leads = useStore((s) => s.business?.leads || []);
+
+  const stats = useMemo(() => {
+    const r = periodRange(period);
+    const inRange = (d) => d && d >= r.from && d <= r.to;
+    let paid = 0, organic = 0, other = 0;
+    const breakdown = {};
+
+    leads.forEach((l) => {
+      const d = parseDate(l.date);
+      if (!inRange(d)) return;
+      const kind = classifySource(l.source);
+      if (kind === 'paid') paid += 1;
+      else if (kind === 'organic') organic += 1;
+      else other += 1;
+      const key = l.source || 'Unknown';
+      breakdown[key] = (breakdown[key] || 0) + 1;
+    });
+
+    const total = paid + organic + other;
+    return {
+      paid, organic, other, total, label: r.label,
+      breakdown: Object.entries(breakdown)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 4),
+    };
+  }, [period, leads]);
+
+  if (stats.total === 0) {
+    return (
+      <motion.section
+        {...fadeUp}
+        transition={{ duration: 0.5, ease, delay: 0.06 }}
+        className="surface border rounded-2xl p-4 mb-4 text-center"
+      >
+        <div className="text-[10px] uppercase tracking-wider text-muted font-semibold mb-2">
+          Leads · {stats.label}
+        </div>
+        <div className="text-sm text-muted py-2">No leads yet</div>
+      </motion.section>
+    );
+  }
+
+  const paidPct = stats.total > 0 ? (stats.paid / stats.total) * 100 : 0;
+  const organicPct = stats.total > 0 ? (stats.organic / stats.total) * 100 : 0;
+  const otherPct = stats.total > 0 ? (stats.other / stats.total) * 100 : 0;
+
+  return (
+    <motion.section
+      {...fadeUp}
+      transition={{ duration: 0.5, ease, delay: 0.06 }}
+      className="surface border rounded-2xl p-4 mb-4"
+    >
+      <div className="flex items-baseline justify-between mb-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-muted font-semibold">
+            Leads · {stats.label}
+          </div>
+          <div className="font-display text-xl leading-tight mt-0.5">
+            {stats.total}
+            <span className="text-xs text-muted font-sans ml-1">leads</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Stacked bar: paid / organic / other */}
+      <div className="h-2.5 rounded-full overflow-hidden flex bg-[var(--bg)] mb-3">
+        {stats.paid > 0 && (
+          <motion.div
+            initial={{ width: 0 }}
+            animate={{ width: `${paidPct}%` }}
+            transition={{ duration: 0.6, ease, delay: 0.1 }}
+            style={{ backgroundColor: accent.primary }}
+          />
+        )}
+        {stats.organic > 0 && (
+          <motion.div
+            initial={{ width: 0 }}
+            animate={{ width: `${organicPct}%` }}
+            transition={{ duration: 0.6, ease, delay: 0.15 }}
+            style={{ backgroundColor: '#9b59b6' }}
+          />
+        )}
+        {stats.other > 0 && (
+          <motion.div
+            initial={{ width: 0 }}
+            animate={{ width: `${otherPct}%` }}
+            transition={{ duration: 0.6, ease, delay: 0.2 }}
+            style={{ backgroundColor: '#7a8a8c' }}
+          />
+        )}
+      </div>
+
+      <div className="grid grid-cols-3 gap-2 mb-3">
+        <BreakdownCard
+          icon={DollarSign}
+          label="Paid"
+          value={stats.paid}
+          pct={paidPct}
+          color={accent.primary}
+          bg={accent.soft}
+        />
+        <BreakdownCard
+          icon={Sparkles}
+          label="Organic"
+          value={stats.organic}
+          pct={organicPct}
+          color="#9b59b6"
+          bg="#9b59b622"
+        />
+        {stats.other > 0 ? (
+          <BreakdownCard
+            icon={null}
+            label="Other"
+            value={stats.other}
+            pct={otherPct}
+            color="#7a8a8c"
+            bg="#7a8a8c22"
+          />
+        ) : (
+          <div />
+        )}
+      </div>
+
+      {/* Source breakdown */}
+      {stats.breakdown.length > 0 && (
+        <div className="space-y-1 pt-2 border-t border-[var(--border)]">
+          {stats.breakdown.map(([source, count]) => {
+            const kind = classifySource(source);
+            const color = kind === 'paid' ? accent.primary
+              : kind === 'organic' ? '#9b59b6'
+              : '#7a8a8c';
+            return (
+              <div key={source} className="flex items-center gap-2 text-[11px]">
+                <span
+                  className="w-1.5 h-1.5 rounded-full shrink-0"
+                  style={{ backgroundColor: color }}
+                />
+                <span className="flex-1 truncate">{source}</span>
+                <span className="text-muted shrink-0">{count}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </motion.section>
+  );
+}
+
+function BreakdownCard({ icon: Icon, label, value, pct, color, bg }) {
+  return (
+    <div className="bg-[var(--bg)] rounded-xl p-2.5">
+      <div className="flex items-center gap-1 mb-0.5">
+        {Icon && (
+          <div
+            className="w-4 h-4 rounded-md flex items-center justify-center"
+            style={{ backgroundColor: bg, color }}
+          >
+            <Icon size={9} />
+          </div>
+        )}
+        <div className="text-[9px] uppercase tracking-wider text-muted font-medium">
+          {label}
+        </div>
+      </div>
+      <div className="font-display text-lg leading-none" style={{ color }}>
+        {value}
+      </div>
+      <div className="text-[10px] text-muted mt-0.5">{pct.toFixed(0)}%</div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// PENDING PAYOUTS (no period — always shows current pending)
+// ════════════════════════════════════════════════════════════════════
+function PendingPayouts({ accent }) {
+  const commissions = useStore((s) => s.business?.staffCommissions || []);
+  const payroll = useStore((s) => s.business?.staffPayroll || []);
+  const setActiveTab = useStore((s) => s.setActiveTab);
+
+  const stats = useMemo(() => {
+    const pendingCommissions = commissions
+      .filter((c) => c.status === 'pending')
+      .reduce((s, c) => s + (Number(c.commissionAmount) || 0), 0);
+    const pendingPayroll = payroll
+      .filter((p) => p.status === 'pending')
+      .reduce((s, p) => {
+        const amtHTG = p.currency === 'USD'
+          ? (Number(p.amount) || 0) * HTG_PER_USD
+          : (Number(p.amount) || 0);
+        return s + amtHTG;
+      }, 0);
+    return {
+      total: pendingCommissions + pendingPayroll,
+      pendingCommissions,
+      pendingPayroll,
+      commCount: commissions.filter((c) => c.status === 'pending').length,
+      payrollCount: payroll.filter((p) => p.status === 'pending').length,
+    };
+  }, [commissions, payroll]);
+
+  if (stats.total === 0) return null;
+
+  return (
+    <motion.section
+      {...fadeUp}
+      transition={{ duration: 0.5, ease, delay: 0.08 }}
+      className="mb-4"
+    >
+      <button
+        onClick={() => setActiveTab('financials')}
+        className="w-full surface border rounded-2xl p-4 flex items-center gap-3 hover:shadow-sm active:scale-[0.99] transition-all text-left"
+      >
+        <div
+          className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+          style={{ backgroundColor: '#d4a94222', color: '#d4a942' }}
+        >
+          <Clock size={16} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[10px] uppercase tracking-wider text-muted font-semibold">
+            Owed to staff
+          </div>
+          <div className="font-display text-xl leading-tight">
+            {fmtHTG(stats.total)} <span className="text-xs text-muted font-sans">HTG</span>
+          </div>
+          <div className="text-[11px] text-muted mt-0.5">
+            {stats.commCount > 0 && <>{stats.commCount} commissions</>}
+            {stats.commCount > 0 && stats.payrollCount > 0 && <> · </>}
+            {stats.payrollCount > 0 && <>{stats.payrollCount} payroll</>}
+          </div>
+        </div>
+        <ChevronRight size={16} className="text-muted shrink-0" />
+      </button>
+    </motion.section>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// DAILY LEAD VOLUME (30d)
 // ════════════════════════════════════════════════════════════════════
 function DailyLeadVolume({ accent }) {
   const leads = useStore((s) => s.business?.leads || []);
@@ -273,7 +658,6 @@ function DailyLeadVolume({ accent }) {
       if (buckets[k]) buckets[k].leads += 1;
     });
     const arr = Object.values(buckets);
-    // 7-day moving average
     for (let i = 0; i < arr.length; i++) {
       const slice = arr.slice(Math.max(0, i - 6), i + 1);
       arr[i].ma = slice.reduce((s, x) => s + x.leads, 0) / slice.length;
@@ -287,7 +671,7 @@ function DailyLeadVolume({ accent }) {
   return (
     <motion.section
       {...fadeUp}
-      transition={{ duration: 0.5, ease, delay: 0.08 }}
+      transition={{ duration: 0.5, ease, delay: 0.10 }}
       className="surface border rounded-2xl p-4 mb-4"
     >
       <div className="flex items-baseline justify-between mb-3">
@@ -325,7 +709,7 @@ function DailyLeadVolume({ accent }) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// PANEL 4: CONVERSION FUNNEL
+// CONVERSION FUNNEL
 // ════════════════════════════════════════════════════════════════════
 function ConversionFunnel({ accent }) {
   const leads = useStore((s) => s.business?.leads || []);
@@ -335,8 +719,6 @@ function ConversionFunnel({ accent }) {
     const counts = {};
     statuses.forEach((s) => { counts[s.label] = 0; });
 
-    // A lead "reached" a stage if it's currently at that stage OR a later one.
-    // Order: À Faire(0) → Rdv(1) → Atelier(2) → Terminé(3). Perdu is dropout.
     const order = {
       '🔴 À Faire': 0,
       '📅 Rdv Fixé': 1,
@@ -347,7 +729,6 @@ function ConversionFunnel({ accent }) {
     leads.forEach((l) => {
       const curr = order[l.leadStatus];
       if (curr === undefined || curr < 0) return;
-      // Count this lead in every stage up to and including its current
       for (let i = 0; i <= curr; i++) {
         const stage = statuses[i];
         if (stage) counts[stage.label] += 1;
@@ -360,6 +741,8 @@ function ConversionFunnel({ accent }) {
   }, [leads]);
 
   const top = stages[0]?.count || 0;
+
+  if (top === 0) return null;
 
   return (
     <motion.section
@@ -407,18 +790,18 @@ function ConversionFunnel({ accent }) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// PANEL 5: TOP STAFF THIS PERIOD
+// TOP STAFF (period-driven)
 // ════════════════════════════════════════════════════════════════════
-function TopStaff({ accent }) {
+function TopStaff({ period, accent }) {
   const leads = useStore((s) => s.business?.leads || []);
 
   const ranking = useMemo(() => {
-    const monthStart = startOfMonth();
+    const r = periodRange(period);
     const stats = {};
 
     leads.forEach((l) => {
       const created = parseDate(l.date);
-      if (!created || created < monthStart) return;
+      if (!created || created < r.from || created > r.to) return;
       const sales = l.assistantResponsible;
       if (sales) {
         if (!stats[sales]) stats[sales] = { name: sales, role: 'Sales', leads: 0, cards: 0, revenue: 0 };
@@ -438,23 +821,21 @@ function TopStaff({ accent }) {
     return Object.values(stats)
       .sort((a, b) => (b.role === 'Ops' ? b.cards : b.leads) - (a.role === 'Ops' ? a.cards : a.leads))
       .slice(0, 4);
-  }, [leads]);
+  }, [period, leads]);
 
-  if (ranking.length === 0) {
-    return null;
-  }
+  if (ranking.length === 0) return null;
 
   return (
     <motion.section
       {...fadeUp}
-      transition={{ duration: 0.5, ease, delay: 0.16 }}
+      transition={{ duration: 0.5, ease, delay: 0.14 }}
       className="surface border rounded-2xl p-4 mb-4"
     >
       <div className="text-[10px] uppercase tracking-wider text-muted font-semibold mb-3">
-        Top staff · this month
+        Top staff · {periodRange(period).label}
       </div>
       <div className="space-y-2">
-        {ranking.map((s, i) => (
+        {ranking.map((s) => (
           <div
             key={s.name}
             className="flex items-center gap-3 p-2 rounded-xl bg-[var(--bg)]"
@@ -501,7 +882,7 @@ function TopStaff({ accent }) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// PANEL 6: ROAS PER CAMPAIGN
+// ROAS RANKINGS
 // ════════════════════════════════════════════════════════════════════
 function ROASRankings({ accent }) {
   const adSpend = useStore((s) => s.business?.adSpend || []);
@@ -540,7 +921,7 @@ function ROASRankings({ accent }) {
   return (
     <motion.section
       {...fadeUp}
-      transition={{ duration: 0.5, ease, delay: 0.20 }}
+      transition={{ duration: 0.5, ease, delay: 0.18 }}
       className="surface border rounded-2xl p-4 mb-4"
     >
       <div className="text-[10px] uppercase tracking-wider text-muted font-semibold mb-3">
@@ -571,14 +952,17 @@ function ROASRankings({ accent }) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// PANEL 7: LEAD SOURCES
+// LEAD SOURCES (period-driven)
 // ════════════════════════════════════════════════════════════════════
-function LeadSources({ accent }) {
+function LeadSources({ period, accent }) {
   const leads = useStore((s) => s.business?.leads || []);
 
   const data = useMemo(() => {
+    const r = periodRange(period);
     const counts = {};
     leads.forEach((l) => {
+      const d = parseDate(l.date);
+      if (!d || d < r.from || d > r.to) return;
       const src = l.source || 'Unknown';
       counts[src] = (counts[src] || 0) + 1;
     });
@@ -587,7 +971,7 @@ function LeadSources({ accent }) {
       .sort((a, b) => b[1] - a[1])
       .slice(0, 6)
       .map(([name, value], i) => ({ name, value, color: palette[i] }));
-  }, [leads]);
+  }, [period, leads]);
 
   if (data.length === 0) return null;
 
@@ -596,11 +980,11 @@ function LeadSources({ accent }) {
   return (
     <motion.section
       {...fadeUp}
-      transition={{ duration: 0.5, ease, delay: 0.24 }}
+      transition={{ duration: 0.5, ease, delay: 0.22 }}
       className="surface border rounded-2xl p-4 mb-4"
     >
       <div className="text-[10px] uppercase tracking-wider text-muted font-semibold mb-3">
-        Lead sources
+        Lead sources · {periodRange(period).label}
       </div>
       <div className="flex items-center gap-4">
         <div className="w-24 h-24 shrink-0">
@@ -641,7 +1025,7 @@ function LeadSources({ accent }) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// PANEL 8: SARAH'S CONTENT STREAK
+// CONTENT STREAK
 // ════════════════════════════════════════════════════════════════════
 function ContentStreak({ accent }) {
   const adherence = useStore((s) => s.business?.contentAdherence || []);
@@ -652,8 +1036,7 @@ function ContentStreak({ accent }) {
 
     let streak = 0;
     for (let i = 0; i < 30; i++) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
+      const d = new Date(); d.setDate(d.getDate() - i);
       const key = d.toISOString().slice(0, 10);
       const entry = adherence.find((a) => String(a.date).slice(0, 10) === key);
       if (entry && entry.actualPosts >= CONTENT_REQUIRED_POSTS_PER_DAY) {
@@ -667,8 +1050,7 @@ function ContentStreak({ accent }) {
 
     let logged = 0, hit = 0;
     for (let i = 0; i < 30; i++) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
+      const d = new Date(); d.setDate(d.getDate() - i);
       const key = d.toISOString().slice(0, 10);
       const entry = adherence.find((a) => String(a.date).slice(0, 10) === key);
       if (entry) {
@@ -684,7 +1066,7 @@ function ContentStreak({ accent }) {
   return (
     <motion.section
       {...fadeUp}
-      transition={{ duration: 0.5, ease, delay: 0.28 }}
+      transition={{ duration: 0.5, ease, delay: 0.26 }}
       className="surface border rounded-2xl p-4 mb-4"
     >
       <div className="flex items-center justify-between mb-3">
