@@ -16,6 +16,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { api, ApiError } from '../lib/api';
 import { DEFAULT_RATES, convert } from '../lib/currency';
+import { businessSlice, startAvsSyncLoop } from './businessSlice';
 
 const uid = (prefix = 'tx') =>
   `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -1582,6 +1583,12 @@ const personalSlice = (set, get) => ({
 
       get().initializeBuckets();
       get().initializeCategories();
+
+      // Tier 5b — hydrate AVS workspace data in the background.
+      // Fires async; never blocks. If AVS API URL isn't configured or
+      // request fails, businessSlice handles the error internally and
+      // preserves any local AVS data already in the store.
+      get().hydrateBusinessFromServer();
     } catch (err) {
       set((s) => ({
         personal: { ...s.personal, syncError: err.message },
@@ -1702,9 +1709,8 @@ const personalSlice = (set, get) => ({
   clearSyncLog: () => set((s) => ({ personal: { ...s.personal, syncLog: [] } })),
 });
 
-const businessSlice = () => ({
-  business: { enabled: false, transactions: [], queue: [] },
-});
+// businessSlice is now imported from ./businessSlice (Tier 5b)
+// The full implementation lives in src/store/businessSlice.js
 
 // ════════════════════════════════════════════════════════════════════
 // COMPOSED STORE
@@ -2309,4 +2315,7 @@ if (typeof window !== 'undefined') {
   });
   setInterval(triggerSync, 20_000);
   setInterval(triggerTick, 60_000);
+
+  // Tier 5b — start the AVS workspace sync loop (every 20s, AVS-scoped queue)
+  startAvsSyncLoop(() => useStore.getState());
 }
