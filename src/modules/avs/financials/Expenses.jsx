@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useStore } from '../../../store/useStore';
 import { getWorkspace } from '../../../workspaces/registry';
+import { useAvsCurrency } from '../useAvsCurrency';
 
 const ws = () => getWorkspace('avs');
 const HTG_PER_USD = 150;
@@ -75,6 +76,7 @@ export default function Expenses() {
   const [editingId, setEditingId] = useState(null);
   const [addingNew, setAddingNew] = useState(false);
   const accent = ws().accent;
+  const { fmtCompact } = useAvsCurrency();
 
   const filtered = useMemo(() => {
     return [...expenses]
@@ -129,7 +131,7 @@ export default function Expenses() {
             <div className="text-[10px] uppercase tracking-wider text-muted font-semibold">MTD</div>
           </div>
           <div className="font-display text-lg leading-tight">
-            {fmtAmount(monthStats.mtdTotal)} <span className="text-[10px] text-muted font-sans">HTG</span>
+            {fmtCompact(monthStats.mtdTotal, 'HTG')}
           </div>
         </div>
         <div className="surface border rounded-2xl p-3">
@@ -143,7 +145,7 @@ export default function Expenses() {
             <div className="text-[10px] uppercase tracking-wider text-muted font-semibold">Monthly est.</div>
           </div>
           <div className="font-display text-lg leading-tight">
-            {fmtAmount(monthStats.monthlyEstimate)} <span className="text-[10px] text-muted font-sans">HTG</span>
+            {fmtCompact(monthStats.monthlyEstimate, 'HTG')}
           </div>
         </div>
       </div>
@@ -220,6 +222,7 @@ export default function Expenses() {
 
 function ExpenseRow({ exp, onOpen }) {
   const cat = CATEGORIES.find((c) => c.id === exp.category) || CATEGORIES[CATEGORIES.length - 1];
+  const { fmtCompact } = useAvsCurrency();
 
   return (
     <button
@@ -245,8 +248,7 @@ function ExpenseRow({ exp, onOpen }) {
       </div>
       <div className="text-right shrink-0">
         <div className="font-display text-base leading-tight">
-          {fmtAmount(exp.amount)}
-          <span className="text-[10px] text-muted font-sans ml-1">{exp.currency}</span>
+          {fmtCompact(exp.amount, exp.currency || 'HTG')}
         </div>
       </div>
     </button>

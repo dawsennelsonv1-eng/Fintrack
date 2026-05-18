@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useStore } from '../../../store/useStore';
 import { getWorkspace } from '../../../workspaces/registry';
+import { useAvsCurrency } from '../useAvsCurrency';
 
 const ws = () => getWorkspace('avs');
 const ease = [0.16, 1, 0.3, 1];
@@ -66,6 +67,7 @@ function fmtHTG(n) {
 export default function PnL() {
   const [period, setPeriod] = useState('month');
   const accent = ws().accent;
+  const { fmtCompact } = useAvsCurrency();
   const leads = useStore((s) => s.business?.leads || []);
   const commissions = useStore((s) => s.business?.staffCommissions || []);
   const payroll = useStore((s) => s.business?.staffPayroll || []);
@@ -194,8 +196,7 @@ export default function PnL() {
           className="font-display text-4xl leading-tight"
           style={{ color: pnl.netProfit >= 0 ? '#3d8b5f' : '#c2452f' }}
         >
-          {pnl.netProfit >= 0 ? '' : '−'}{fmtHTG(Math.abs(pnl.netProfit))}
-          <span className="text-base text-muted font-sans ml-2">HTG</span>
+          {pnl.netProfit >= 0 ? '' : '−'}{fmtCompact(Math.abs(pnl.netProfit), 'HTG')}
         </div>
         <div className="text-xs text-muted mt-1">
           {pnl.revenue > 0 ? `${pnl.margin.toFixed(0)}% margin` : 'no revenue this period'}
@@ -289,7 +290,7 @@ export default function PnL() {
 
 function PnLRow({ label, value, kind, icon: Icon, subtitle, onClick, accent }) {
   const isSubtotal = kind === 'subtotal' || kind === 'total';
-  const isPositive = value >= 0;
+  const { fmtCompact } = useAvsCurrency();
   const Inner = (
     <div
       className={`px-4 py-3 flex items-center gap-3 ${
@@ -332,7 +333,7 @@ function PnLRow({ label, value, kind, icon: Icon, subtitle, onClick, accent }) {
             : (kind === 'positive' ? '#3d8b5f' : value < 0 ? '#c2452f' : 'var(--text)')
         }}
       >
-        {value < 0 ? '−' : ''}{fmtHTG(Math.abs(value))}
+        {value < 0 ? '−' : ''}{fmtCompact(Math.abs(value), 'HTG')}
       </div>
       {onClick && !isSubtotal && (
         <ChevronRight size={14} className="text-muted shrink-0" />

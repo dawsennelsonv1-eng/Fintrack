@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { useStore } from '../../../store/useStore';
 import { getWorkspace } from '../../../workspaces/registry';
+import { useAvsCurrency } from '../useAvsCurrency';
 
 const ws = () => getWorkspace('avs');
 const HTG_PER_USD = 150;
@@ -53,6 +54,7 @@ export default function HistoryView() {
   const payroll = useStore((s) => s.business?.staffPayroll || []);
   const adSpend = useStore((s) => s.business?.adSpend || []);
   const contentAdherence = useStore((s) => s.business?.contentAdherence || []);
+  const { fmtCompact } = useAvsCurrency();
 
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
@@ -237,11 +239,11 @@ export default function HistoryView() {
       {/* Totals strip */}
       {filtered.length > 0 && (
         <div className="grid grid-cols-3 gap-2">
-          <MiniStat label="In" value={`+${fmtHTG(totals.inflow)}`} color="#3d8b5f" />
-          <MiniStat label="Out" value={`−${fmtHTG(totals.outflow)}`} color="#c2452f" />
+          <MiniStat label="In" value={`+${fmtCompact(totals.inflow, 'HTG')}`} color="#3d8b5f" />
+          <MiniStat label="Out" value={`−${fmtCompact(totals.outflow, 'HTG')}`} color="#c2452f" />
           <MiniStat
             label="Net"
-            value={`${totals.net >= 0 ? '+' : '−'}${fmtHTG(Math.abs(totals.net))}`}
+            value={`${totals.net >= 0 ? '+' : '−'}${fmtCompact(Math.abs(totals.net), 'HTG')}`}
             color={totals.net >= 0 ? '#3d8b5f' : '#c2452f'}
           />
         </div>
@@ -291,6 +293,7 @@ function MiniStat({ label, value, color }) {
 }
 
 function EventRow({ event, accent }) {
+  const { fmtCompact } = useAvsCurrency();
   const config = {
     sale:       { icon: CreditCard, color: '#3d8b5f', bg: '#3d8b5f22' },
     commission: { icon: Coins,      color: '#d4a942', bg: '#d4a94222' },
@@ -329,9 +332,9 @@ function EventRow({ event, accent }) {
               opacity: isPending ? 0.6 : 1,
             }}
           >
-            {isIn ? '+' : isOut || isPending ? '−' : ''}{fmtHTG(event.amount)}
+            {isIn ? '+' : isOut || isPending ? '−' : ''}{fmtCompact(event.amount, event.currency || 'HTG')}
           </div>
-          <div className="text-[10px] text-muted">{event.currency}</div>
+          <div className="text-[10px] text-muted">&nbsp;</div>
         </div>
       )}
     </div>

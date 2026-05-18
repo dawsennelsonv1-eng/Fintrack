@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useStore } from '../../../store/useStore';
 import { getWorkspace } from '../../../workspaces/registry';
+import { useAvsCurrency } from '../useAvsCurrency';
 
 const ws = () => getWorkspace('avs');
 const HTG_PER_USD = 150;
@@ -48,6 +49,7 @@ export default function Debts() {
   const [editingId, setEditingId] = useState(null);
   const [addingNew, setAddingNew] = useState(false);
   const accent = ws().accent;
+  const { fmtCompact } = useAvsCurrency();
 
   // Compute balance for each debt
   const debtsWithBalance = useMemo(() => {
@@ -99,7 +101,7 @@ export default function Debts() {
         <StatCard
           icon={ArrowUpRight}
           label="You owe"
-          value={`${fmtAmount(totalOwed)} HTG`}
+          value={fmtCompact(totalOwed, 'HTG')}
           color="#c2452f"
           active={filter === 'owe'}
           onClick={() => setFilter('owe')}
@@ -107,7 +109,7 @@ export default function Debts() {
         <StatCard
           icon={ArrowDownLeft}
           label="Owed to you"
-          value={`${fmtAmount(totalReceivable)} HTG`}
+          value={fmtCompact(totalReceivable, 'HTG')}
           color="#3d8b5f"
           active={filter === 'receivable'}
           onClick={() => setFilter('receivable')}
@@ -190,6 +192,7 @@ function DebtRow({ debt, onOpen }) {
   const accent = ws().accent;
   const isPaid = debt.status === 'paid';
   const isPartial = debt.status === 'partial';
+  const { fmtCompact } = useAvsCurrency();
 
   return (
     <button
@@ -220,12 +223,11 @@ function DebtRow({ debt, onOpen }) {
       </div>
       <div className="text-right shrink-0">
         <div className={`font-display text-base leading-tight ${isPaid ? 'opacity-50' : ''}`}>
-          {fmtAmount(debt.balance)}
-          <span className="text-[10px] text-muted font-sans ml-1">{debt.currency}</span>
+          {fmtCompact(debt.balance, debt.currency || 'HTG')}
         </div>
         {debt.repaid > 0 && !isPaid && (
           <div className="text-[10px] text-muted mt-0.5">
-            of {fmtAmount(debt.principal)}
+            of {fmtCompact(debt.principal, debt.currency || 'HTG')}
           </div>
         )}
       </div>
