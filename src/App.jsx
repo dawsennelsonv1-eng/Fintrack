@@ -1,11 +1,6 @@
 // src/App.jsx
-// Tier 5g — adds CombinedWealthStrip below header
-//
-// Changes from Tier 5a:
-//   • CombinedWealthStrip now renders between Header and DebtPill
-//   • Strip shows both workspaces' key money number simultaneously
-//   • Tapping either side jumps to that workspace's dashboard
-//   • DebtPill still appears below the strip (Personal only)
+// Ship 1 — Removes CombinedWealthStrip per Christian's feedback.
+// Adds AvsSyncDebug overlay (triple-tap top of screen to open).
 //
 import { useEffect, Suspense } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -18,7 +13,7 @@ import { UndoToast } from './components/TxActions';
 import InstallPrompt from './components/InstallPrompt';
 import SearchOverlay from './components/SearchOverlay';
 import Settings from './components/Settings';
-import CombinedWealthStrip from './components/CombinedWealthStrip';
+import AvsSyncDebug from './components/AvsSyncDebug';
 import { getWorkspace } from './workspaces/registry';
 
 const slide = {
@@ -59,11 +54,12 @@ export default function App() {
     <div className="min-h-screen font-sans">
       <Header />
 
-      {/* Tier 5g — Combined wealth strip below header, above DebtPill */}
-      <div className="max-w-2xl mx-auto px-5 pt-3 space-y-2">
-        <CombinedWealthStrip />
-        {workspace === 'personal' && <DebtPill />}
-      </div>
+      {/* DebtPill is Personal-only; AVS hides it */}
+      {workspace === 'personal' && (
+        <div className="max-w-2xl mx-auto px-5 pt-3">
+          <DebtPill />
+        </div>
+      )}
 
       <AnimatePresence mode="wait">
         <motion.div key={`${workspace}:${activeTab}`} {...slide}>
@@ -81,6 +77,7 @@ export default function App() {
       <Settings />
       <UndoToast />
       <InstallPrompt />
+      <AvsSyncDebug />
     </div>
   );
 }
