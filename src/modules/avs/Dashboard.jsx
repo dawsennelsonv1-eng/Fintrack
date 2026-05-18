@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { useStore } from '../../store/useStore';
 import { getWorkspace } from '../../workspaces/registry';
+import { useAvsCurrency } from './useAvsCurrency';
 import {
   CONTENT_REQUIRED_POSTS_PER_DAY,
 } from '../../store/businessSlice';
@@ -224,6 +225,7 @@ function PeriodStats({ period, accent }) {
   const payroll = useStore((s) => s.business?.staffPayroll || []);
   const adSpend = useStore((s) => s.business?.adSpend || []);
   const cardCosts = useStore((s) => s.business?.cardCosts || []);
+  const { fmtCompact, base } = useAvsCurrency();
 
   const stats = useMemo(() => {
     const r = periodRange(period);
@@ -335,8 +337,7 @@ function PeriodStats({ period, accent }) {
           </div>
         </div>
         <div className="font-display text-2xl leading-tight">
-          {fmtHTG(stats.revenue)}
-          <span className="text-xs text-muted font-sans ml-1">HTG</span>
+          {fmtCompact(stats.revenue, 'HTG')}
         </div>
         <div className="flex items-center gap-1.5 mt-1.5 text-[11px]">
           <span className="text-muted">{stats.cards} cards</span>
@@ -381,13 +382,12 @@ function PeriodStats({ period, accent }) {
           className="font-display text-2xl leading-tight"
           style={{ color: stats.profit >= 0 ? '#3d8b5f' : '#c2452f' }}
         >
-          {stats.profit >= 0 ? '' : '−'}{fmtHTG(Math.abs(stats.profit))}
-          <span className="text-xs text-muted font-sans ml-1">HTG</span>
+          {stats.profit >= 0 ? '' : '−'}{fmtCompact(Math.abs(stats.profit), 'HTG')}
         </div>
         <div className="text-[11px] text-muted mt-1.5">
           {stats.revenue > 0 ? `${stats.profitPct.toFixed(0)}% margin` : 'no revenue'}
           {stats.totalCosts > 0 && (
-            <> · {fmtHTG(stats.totalCosts)} costs</>
+            <> · {fmtCompact(stats.totalCosts, 'HTG')} costs</>
           )}
         </div>
       </div>
@@ -579,6 +579,7 @@ function PendingPayouts({ accent }) {
   const commissions = useStore((s) => s.business?.staffCommissions || []);
   const payroll = useStore((s) => s.business?.staffPayroll || []);
   const setActiveTab = useStore((s) => s.setActiveTab);
+  const { fmtCompact } = useAvsCurrency();
 
   const stats = useMemo(() => {
     const pendingCommissions = commissions
@@ -624,7 +625,7 @@ function PendingPayouts({ accent }) {
             Owed to staff
           </div>
           <div className="font-display text-xl leading-tight">
-            {fmtHTG(stats.total)} <span className="text-xs text-muted font-sans">HTG</span>
+            {fmtCompact(stats.total, 'HTG')}
           </div>
           <div className="text-[11px] text-muted mt-0.5">
             {stats.commCount > 0 && <>{stats.commCount} commissions</>}
