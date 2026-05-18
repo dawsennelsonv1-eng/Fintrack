@@ -122,6 +122,14 @@ export const businessSlice = (set, get) => ({
     businessDebtEvents:  [],
     businessExpenses:    [],
 
+    // ─── Ship 2: local-only payroll predictor config ────────
+    // Stores cadence config for each sales/content staff member.
+    // Format: { 'Jémima': { nextPayDate: '2026-05-19', intervalDays: 14, amount: 2500 }, ... }
+    // Local-only (not synced to sheet) — pure UI state to drive auto-
+    // generation of upcoming payroll entries.
+    payrollSchedule:  {},
+    payrollSetupComplete: false,
+
     // ─── Sync state (AVS-scoped) ────────────────────────────
     queue:        [],
     lastSyncAt:   null,
@@ -370,6 +378,192 @@ export const businessSlice = (set, get) => ({
     }));
     enqueueAvs(set, get, 'contentAdherence', 'create', stripMeta(entry));
     return entry;
+  },
+
+  updateContentAdherence: (id, patch) => {
+    let updated = null;
+    set((s) => ({
+      business: {
+        ...s.business,
+        contentAdherence: s.business.contentAdherence.map((c) => {
+          if (c.id !== id) return c;
+          updated = { ...c, ...patch, updatedAt: nowISO(), _pending: true };
+          return updated;
+        }),
+      },
+    }));
+    if (updated) enqueueAvs(set, get, 'contentAdherence', 'update', stripMeta(updated));
+    return updated;
+  },
+
+  removeContentAdherence: (id) => {
+    set((s) => ({
+      business: {
+        ...s.business,
+        contentAdherence: s.business.contentAdherence.filter((c) => c.id !== id),
+      },
+    }));
+    enqueueAvs(set, get, 'contentAdherence', 'delete', { id });
+  },
+
+  // ═══════════════════════════════════════════════════════════
+  // COMMISSION / PAYROLL EDIT + DELETE (Ship 2)
+  // ═══════════════════════════════════════════════════════════
+  markCommissionUnpaid: (id) => {
+    let updated = null;
+    set((s) => ({
+      business: {
+        ...s.business,
+        staffCommissions: s.business.staffCommissions.map((c) => {
+          if (c.id !== id) return c;
+          updated = {
+            ...c, status: 'pending', paidDate: '',
+            updatedAt: nowISO(), _pending: true,
+          };
+          return updated;
+        }),
+      },
+    }));
+    if (updated) enqueueAvs(set, get, 'staffCommission', 'update', stripMeta(updated));
+  },
+
+  updateCommission: (id, patch) => {
+    let updated = null;
+    set((s) => ({
+      business: {
+        ...s.business,
+        staffCommissions: s.business.staffCommissions.map((c) => {
+          if (c.id !== id) return c;
+          updated = { ...c, ...patch, updatedAt: nowISO(), _pending: true };
+          return updated;
+        }),
+      },
+    }));
+    if (updated) enqueueAvs(set, get, 'staffCommission', 'update', stripMeta(updated));
+    return updated;
+  },
+
+  removeCommission: (id) => {
+    set((s) => ({
+      business: {
+        ...s.business,
+        staffCommissions: s.business.staffCommissions.filter((c) => c.id !== id),
+      },
+    }));
+    enqueueAvs(set, get, 'staffCommission', 'delete', { id });
+  },
+
+  markPayrollUnpaid: (id) => {
+    let updated = null;
+    set((s) => ({
+      business: {
+        ...s.business,
+        staffPayroll: s.business.staffPayroll.map((p) => {
+          if (p.id !== id) return p;
+          updated = {
+            ...p, status: 'pending', paidDate: '',
+            updatedAt: nowISO(), _pending: true,
+          };
+          return updated;
+        }),
+      },
+    }));
+    if (updated) enqueueAvs(set, get, 'staffPayroll', 'update', stripMeta(updated));
+  },
+
+  updatePayroll: (id, patch) => {
+    let updated = null;
+    set((s) => ({
+      business: {
+        ...s.business,
+        staffPayroll: s.business.staffPayroll.map((p) => {
+          if (p.id !== id) return p;
+          updated = { ...p, ...patch, updatedAt: nowISO(), _pending: true };
+          return updated;
+        }),
+      },
+    }));
+    if (updated) enqueueAvs(set, get, 'staffPayroll', 'update', stripMeta(updated));
+    return updated;
+  },
+
+  removePayroll: (id) => {
+    set((s) => ({
+      business: {
+        ...s.business,
+        staffPayroll: s.business.staffPayroll.filter((p) => p.id !== id),
+      },
+    }));
+    enqueueAvs(set, get, 'staffPayroll', 'delete', { id });
+  },
+
+  // ═══════════════════════════════════════════════════════════
+  // PAYROLL PREDICTOR (Ship 2)
+  // ═══════════════════════════════════════════════════════════
+  //
+  // Onboarding flow: user sets next pay date + cadence for each staff
+  // member. We immediately generate 6 months of pending entries.
+  //
+  // Schedule shape:
+  //   { 'Jémima': { nextPayDate: 'YYYY-MM-DD', intervalDays: 14, amount: 2500, currency: 'HTG' }, ... }
+  //
+  setupPayrollSchedule: (config) => {
+    const HORIZON_MONTHS = 6;
+    const horizon = new Date();
+    horizon.setMonth(horizon.getMonth() + HORIZON_MONTHS);
+
+    set((s) => ({
+      business: {
+        ...s.business,
+        payrollSchedule: config,
+        payrollSetupComplete: true,
+      },
+    }));
+
+    // Generate upcoming entries for each staff member
+    Object.entries(config).forEach(([staffName, cfg]) => {
+      if (!cfg.nextPayDate || !cfg.intervalDays) return;
+      const start = new Date(cfg.nextPayDate);
+      let cursor = new Date(start);
+      while (cursor <= horizon) {
+        const dateStr = cursor.toISOString().slice(0, 10);
+        // Skip if already scheduled (avoids duplicates on re-setup)
+        const exists = get().business.staffPayroll.some((p) =>
+          p.staffName === staffName &&
+          p.status === 'pending' &&
+          String(p.periodEnd).slice(0, 10) === dateStr
+        );
+        if (!exists) {
+          const periodStart = new Date(cursor);
+          periodStart.setDate(periodStart.getDate() - cfg.intervalDays);
+          get().recordPayroll({
+            staffName,
+            type: 'salary',
+            amount: cfg.amount,
+            currency: cfg.currency || 'HTG',
+            periodStart: periodStart.toISOString().slice(0, 10),
+            periodEnd: dateStr,
+            notes: 'Auto-generated · ' + (cfg.intervalDays === 14 ? 'bi-weekly' : cfg.intervalDays === 30 ? 'monthly' : `${cfg.intervalDays}d cadence`),
+            status: 'pending',
+          });
+        }
+        cursor.setDate(cursor.getDate() + cfg.intervalDays);
+      }
+    });
+  },
+
+  // Allow user to skip the onboarding card without setting up schedules
+  skipPayrollSetup: () => {
+    set((s) => ({
+      business: { ...s.business, payrollSetupComplete: true },
+    }));
+  },
+
+  // Allow user to redo setup (e.g. after Sarah's pay date changes)
+  resetPayrollSetup: () => {
+    set((s) => ({
+      business: { ...s.business, payrollSetupComplete: false },
+    }));
   },
 
   // ═══════════════════════════════════════════════════════════
