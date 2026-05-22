@@ -45,13 +45,147 @@ const nowISO = () => new Date().toISOString();
 // QUEUE HELPER — AVS-scoped
 // ════════════════════════════════════════════════════════════════════
 function enqueueAvs(set, get, entity, action, payload) {
+  // Translate to French column names for entities backed by French tabs
+  const wirePayload = toFrench(entity, payload);
   set((s) => ({
     business: {
       ...s.business,
-      queue: [...(s.business?.queue || []), { entity, action, ...payload }],
+      queue: [...(s.business?.queue || []), { entity, action, ...wirePayload }],
     },
   }));
   Promise.resolve().then(() => get().syncAvsQueue());
+}
+
+// ════════════════════════════════════════════════════════════════════
+// FRENCH ↔ ENGLISH TRANSLATION (Round F)
+// ════════════════════════════════════════════════════════════════════
+//
+// The server (Code.gs) reads/writes French tabs (SALES_PIPELINE,
+// UTILISATEUR, WEB_INCOMING) using their actual French column names.
+// The app uses clean English keys throughout (id, client, status, etc).
+// These tables translate at the wire boundary.
+//
+// FR_TO_EN: server JSON → app state (called on hydrate)
+// EN_TO_FR: app state → server payload (called in enqueueAvs)
+//
+const FR_TO_EN = {
+  lead: {  // SALES_PIPELINE
+    'ID_Lead': 'id',
+    'Date': 'date',
+    'Client': 'client',
+    'Statut_Lead': 'leadStatus',
+    'WhatsApp': 'whatsapp',
+    'Source': 'source',
+    'Passeport_Dispo?': 'passportAvailable',
+    'Type_Carte': 'cardType',
+    'Pack_Choisi': 'pack',
+    'Promo_Appliquee': 'promoApplied',
+    'Prix_Total': 'totalPrice',
+    'Date_inscrip_Payé': 'dateInscriptionPaid',
+    'Preuve_inscription': 'proofInscription',
+    'Balance_Client': 'balanceClient',
+    'Aide_1ere_Commande?': 'firstOrderHelp',
+    'Statut_Paiement': 'paymentStatus',
+    'Date_Rdv': 'rdvDate',
+    'Rappel_J-1': 'reminderDayBefore',
+    'Rappel_Matin': 'reminderMorning',
+    'Rappel_1h_Avant': 'reminder1hBefore',
+    'Relance_Phase1_Immediate': 'followUpPhase1',
+    'Relance_Phase2_Tardive': 'followUpPhase2',
+    'Compteur_Appels': 'callCount',
+    'Assistant_responsable': 'assistantResponsible',
+    'Notes': 'notes',
+    'date_Total_payé': 'datePaidFull',
+    'Assigné_Ops': 'assignedOps',
+    'Statut_Ops': 'opsStatus',
+    'Raison_Echec': 'failureReason',
+    'Rdv_Aide_Commande': 'rdvHelp',
+    'Carte_Physique_Recue?': 'physicalCardReceived',
+    'Date_Reception': 'dateReception',
+    'Lieu_Recuperation': 'pickupLocation',
+    'Compagnie_Livraison': 'deliveryCompany',
+    'Preuves_Reception': 'proofReception',
+    'Start_Time': 'startTime',
+    'End_Time': 'endTime',
+    'Client_Rating_score': 'clientRating',
+    'Review_text_format': 'reviewText',
+    'Preuve_Paiement': 'paymentProof',
+    'type_paiement': 'paymentType',
+    'admin_flag': 'adminFlag',
+    'Pay_Statut_Ops': 'payStatusOps',
+    'Pay_Statut_Sales': 'payStatusSales',
+  },
+  staff: {  // UTILISATEUR
+    'Nom': 'id',          // staff identified by Nom
+    'Email': 'email',
+    'Role': 'role',
+    'Whatsapp': 'whatsapp',
+    'Photo': 'photo',
+    'Status': 'status',
+  },
+  rechargeOrder: {  // WEB_INCOMING
+    'ID_Order': 'id',
+    'Date': 'date',
+    'Statut': 'status',
+    'Client': 'client',
+    'WhatsApp': 'whatsapp',
+    'Service': 'service',
+    'Plateforme': 'platform',
+    'Tag_Info': 'tagInfo',
+    'Montant_USD': 'amountUsd',
+    'Montant_HTG': 'amountHtg',
+    'Paiement': 'paymentMethod',
+    'Code_Promo': 'promoCode',
+    'Frais': 'fees',
+    'Vitesse': 'speed',
+    'Email': 'email',
+    'Subscription': 'subscription',
+    'Bénéfices': 'profit',
+    'Prouf': 'proof',
+    'Nom Fournisseur': 'supplierName',
+    'Taux Fournisseur': 'supplierRate',
+    'Frais fournisseur': 'supplierFee',
+  },
+};
+
+// Build reverse maps (en→fr) lazily on first use
+const EN_TO_FR = {};
+Object.keys(FR_TO_EN).forEach((entity) => {
+  const rev = {};
+  const m = FR_TO_EN[entity];
+  for (const fr in m) rev[m[fr]] = fr;
+  EN_TO_FR[entity] = rev;
+});
+
+// Convert a single server row from FR keys to EN keys.
+// Unknown keys pass through. Adds english `id` field as alias if not present.
+function fromFrench(entity, row) {
+  const map = FR_TO_EN[entity];
+  if (!map || !row || typeof row !== 'object') return row;
+  const out = {};
+  for (const k in row) {
+    const enKey = map[k] || k;
+    out[enKey] = row[k];
+  }
+  return out;
+}
+
+function fromFrenchAll(entity, list) {
+  if (!Array.isArray(list)) return list;
+  return list.map((r) => fromFrench(entity, r));
+}
+
+// Convert an app payload from EN keys to FR keys (for write).
+// Unknown keys pass through.
+function toFrench(entity, payload) {
+  const map = EN_TO_FR[entity];
+  if (!map || !payload || typeof payload !== 'object') return payload;
+  const out = {};
+  for (const k in payload) {
+    const frKey = map[k] || k;
+    out[frKey] = payload[k];
+  }
+  return out;
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1189,13 +1323,17 @@ export const businessSlice = (set, get) => ({
       const data = await avsApi.fetchAll();
       const local = get().business;
 
+      // Translate French-tab data to English keys
+      const translatedLeads          = fromFrenchAll('lead', data.leads || []);
+      const translatedStaff          = fromFrenchAll('staff', data.staff || []);
+      const translatedRechargeOrders = fromFrenchAll('rechargeOrder', data.rechargeOrders || []);
+
       set((s) => ({
         business: {
           ...s.business,
-          leads:             mergeById(local.leads, data.leads),
-          rechargeOrders:    mergeById(local.rechargeOrders, data.rechargeOrders),
-          roi:               mergeById(local.roi, data.roi),
-          staff:             mergeById(local.staff, data.staff),
+          leads:             mergeById(local.leads, translatedLeads),
+          rechargeOrders:    mergeById(local.rechargeOrders, translatedRechargeOrders),
+          staff:             mergeById(local.staff, translatedStaff),
           adSpend:           mergeById(local.adSpend, data.adSpend),
           staffCommissions:  mergeById(local.staffCommissions, data.staffCommissions),
           cardCosts:         mergeById(local.cardCosts, data.cardCosts),
