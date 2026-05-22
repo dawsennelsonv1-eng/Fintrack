@@ -1,6 +1,6 @@
 // src/workspaces/registry.js
 //
-// Tier 5a — Workspace Registry
+// Tier 5a + v10 Recharge — Workspace Registry
 //
 // Single source of truth for every workspace. To add a new workspace
 // (e.g. AVS Recharge, Family, etc) you ONLY edit this file:
@@ -13,16 +13,19 @@
 //
 import personal from './personal';
 import avs from './avs';
+import { rechargeWorkspace } from './recharge';
 
 export const WORKSPACES = {
   personal,
   avs,
+  recharge: rechargeWorkspace,
 };
 
 // Ordered list for UI (header switcher, etc)
 export const WORKSPACE_LIST = [
   WORKSPACES.personal,
   WORKSPACES.avs,
+  WORKSPACES.recharge,
 ];
 
 // ─── Helper accessors ─────────────────────────────────────
