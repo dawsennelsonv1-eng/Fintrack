@@ -97,6 +97,11 @@ export const CONTENT_MONTHLY_HTG = 7500;
 // Sarah's required posts/day across 2 TikTok accounts
 export const CONTENT_REQUIRED_POSTS_PER_DAY = 6;
 
+// ── Recharge workspace defaults (v10) ──
+export const RECHARGE_COMMISSION_RATE = 0.25;  // Marc gets 25% of order benefits
+export const RECHARGE_CEO_SPLIT_PCT   = 0.75;  // You take 75% of net after costs
+export const RECHARGE_DEFAULT_CYCLE   = 30;    // 30 days default; user can set to 15
+
 // ════════════════════════════════════════════════════════════════════
 // BUSINESS SLICE
 // ════════════════════════════════════════════════════════════════════
@@ -121,6 +126,11 @@ export const businessSlice = (set, get) => ({
     businessDebts:       [],
     businessDebtEvents:  [],
     businessExpenses:    [],
+
+    // ─── v10 additions (Recharge workspace) ─────────────────
+    rechargeCommissions: [],
+    rechargePayouts:     [],
+    rechargeConfig:      [],   // single-row config table; latest entry wins
 
     // ─── Ship 2: local-only payroll predictor config ────────
     // Stores cadence config for each sales/content staff member.
@@ -857,6 +867,317 @@ export const businessSlice = (set, get) => ({
   },
 
   // ═══════════════════════════════════════════════════════════
+  // RECHARGE WORKSPACE (v10)
+  // ═══════════════════════════════════════════════════════════
+  //
+  // Recharge orders are populated by make.com into WEB_INCOMING. Marc
+  // marks orders Terminé in his own app. This app is monitoring +
+  // analytics, plus Marc's commission ledger + CEO payouts.
+  //
+  // If the user manually flips a recharge order's status here, we
+  // auto-create a Marc commission for that order (25% of profit).
+  //
+
+  // Returns the current config row (or defaults if none stored yet)
+  getRechargeConfig: () => {
+    const list = get().business.rechargeConfig || [];
+    if (list.length === 0) {
+      return {
+        id: 'default',
+        cycleDays: RECHARGE_DEFAULT_CYCLE,
+        ceoSplitPct: RECHARGE_CEO_SPLIT_PCT,
+        commissionRate: RECHARGE_COMMISSION_RATE,
+        cycleStartDate: nowISO().slice(0, 10),
+        lastPayoutDate: '',
+        currency: 'HTG',
+        notes: '',
+      };
+    }
+    return list[0];
+  },
+
+  // Persist config to sheet
+  saveRechargeConfig: (patch) => {
+    const current = get().getRechargeConfig();
+    const updated = {
+      ...current,
+      ...patch,
+      id: current.id === 'default' ? uid('rcfg') : current.id,
+      updatedAt: nowISO(),
+      _pending: true,
+    };
+    set((s) => ({
+      business: {
+        ...s.business,
+        rechargeConfig: [updated], // single-row, replaces
+      },
+    }));
+    const action = current.id === 'default' ? 'create' : 'update';
+    if (current.id === 'default') updated.createdAt = nowISO();
+    enqueueAvs(set, get, 'rechargeConfig', action, stripMeta(updated));
+    return updated;
+  },
+
+  // Update an order's status — currently a stub since Marc owns this.
+  // If the user does change a status here, we mirror to WEB_INCOMING
+  // AND auto-create a commission when the new status is 'Terminé'.
+  updateRechargeOrderStatus: (orderId, newStatus) => {
+    const order = get().business.rechargeOrders.find((o) => o.id === orderId);
+    if (!order) return null;
+    const wasTermine = String(order.status).toLowerCase().includes('termin');
+    const nowTermine = String(newStatus).toLowerCase().includes('termin');
+
+    const updated = { ...order, status: newStatus, updatedAt: nowISO(), _pending: true };
+    set((s) => ({
+      business: {
+        ...s.business,
+        rechargeOrders: s.business.rechargeOrders.map((o) => o.id === orderId ? updated : o),
+      },
+    }));
+    enqueueAvs(set, get, 'rechargeOrder', 'update', stripMeta(updated));
+
+    // Newly Terminé → auto-create Marc commission (only if not already created)
+    if (!wasTermine && nowTermine) {
+      get().recordRechargeCommissionForOrder(order);
+    }
+    return updated;
+  },
+
+  // Create Marc's commission for a completed order, if not already there
+  recordRechargeCommissionForOrder: (order) => {
+    const cfg = get().getRechargeConfig();
+    const rate = Number(cfg.commissionRate) || RECHARGE_COMMISSION_RATE;
+    const benefit = Number(order.profit) || 0;
+    if (benefit <= 0) return null;  // no commission on loss orders
+
+    // Check for duplicate
+    const existing = get().business.rechargeCommissions.find((c) => c.orderId === order.id);
+    if (existing) return existing;
+
+    const commission = {
+      id: uid('rcom'),
+      orderId: order.id,
+      date: nowISO(),
+      staffName: 'Marc',
+      orderBenefit: benefit,
+      commissionRate: rate,
+      commissionAmount: Math.round(benefit * rate),
+      currency: 'HTG',
+      status: 'pending',
+      paidDate: '',
+      notes: `${order.service || 'Recharge'} · ${order.client || order.tagInfo || ''}`,
+      createdAt: nowISO(),
+      updatedAt: nowISO(),
+      _pending: true,
+    };
+    set((s) => ({
+      business: {
+        ...s.business,
+        rechargeCommissions: [commission, ...s.business.rechargeCommissions],
+      },
+    }));
+    enqueueAvs(set, get, 'rechargeCommission', 'create', stripMeta(commission));
+    return commission;
+  },
+
+  markRechargeCommissionPaid: (id) => {
+    let updated = null;
+    set((s) => ({
+      business: {
+        ...s.business,
+        rechargeCommissions: s.business.rechargeCommissions.map((c) => {
+          if (c.id !== id) return c;
+          updated = { ...c, status: 'paid', paidDate: nowISO(), updatedAt: nowISO(), _pending: true };
+          return updated;
+        }),
+      },
+    }));
+    if (updated) enqueueAvs(set, get, 'rechargeCommission', 'update', stripMeta(updated));
+  },
+
+  markRechargeCommissionUnpaid: (id) => {
+    let updated = null;
+    set((s) => ({
+      business: {
+        ...s.business,
+        rechargeCommissions: s.business.rechargeCommissions.map((c) => {
+          if (c.id !== id) return c;
+          updated = { ...c, status: 'pending', paidDate: '', updatedAt: nowISO(), _pending: true };
+          return updated;
+        }),
+      },
+    }));
+    if (updated) enqueueAvs(set, get, 'rechargeCommission', 'update', stripMeta(updated));
+  },
+
+  updateRechargeCommission: (id, patch) => {
+    let updated = null;
+    set((s) => ({
+      business: {
+        ...s.business,
+        rechargeCommissions: s.business.rechargeCommissions.map((c) => {
+          if (c.id !== id) return c;
+          updated = { ...c, ...patch, updatedAt: nowISO(), _pending: true };
+          return updated;
+        }),
+      },
+    }));
+    if (updated) enqueueAvs(set, get, 'rechargeCommission', 'update', stripMeta(updated));
+    return updated;
+  },
+
+  removeRechargeCommission: (id) => {
+    set((s) => ({
+      business: {
+        ...s.business,
+        rechargeCommissions: s.business.rechargeCommissions.filter((c) => c.id !== id),
+      },
+    }));
+    enqueueAvs(set, get, 'rechargeCommission', 'delete', { id });
+  },
+
+  // Backfill commissions for every Terminé order missing one.
+  // Useful first-time after hydrating the existing 168 historical orders.
+  backfillRechargeCommissions: () => {
+    const orders = get().business.rechargeOrders || [];
+    const existingByOrder = new Set(
+      (get().business.rechargeCommissions || []).map((c) => c.orderId)
+    );
+    let created = 0;
+    orders.forEach((o) => {
+      const isTermine = String(o.status || '').toLowerCase().includes('termin');
+      if (!isTermine) return;
+      if (existingByOrder.has(o.id)) return;
+      if (!(Number(o.profit) > 0)) return;
+      get().recordRechargeCommissionForOrder(o);
+      created += 1;
+    });
+    return created;
+  },
+
+  // Record a CEO payout for the current cycle.
+  // Computes the proposed amounts; user confirms.
+  recordRechargePayout: ({ cycleStart, cycleEnd, status = 'recorded', notes = '' }) => {
+    const orders = get().business.rechargeOrders || [];
+    const commissions = get().business.rechargeCommissions || [];
+    const expenses = get().business.businessExpenses || [];
+    const payroll = get().business.staffPayroll || [];
+    const cfg = get().getRechargeConfig();
+
+    const from = new Date(cycleStart);
+    const to = new Date(cycleEnd);
+    to.setHours(23, 59, 59, 999);
+    const inR = (v) => {
+      if (!v) return false;
+      const d = new Date(v);
+      return !isNaN(d) && d >= from && d <= to;
+    };
+
+    // Benefits in cycle (only Terminé orders)
+    let benefitsTotal = 0;
+    orders.forEach((o) => {
+      if (!String(o.status || '').toLowerCase().includes('termin')) return;
+      if (!inR(o.date)) return;
+      benefitsTotal += Number(o.profit) || 0;
+    });
+
+    // Commissions paid in cycle
+    let commissionsPaid = 0;
+    commissions.forEach((c) => {
+      if (c.status !== 'paid') return;
+      if (!inR(c.paidDate)) return;
+      commissionsPaid += Number(c.commissionAmount) || 0;
+    });
+
+    // Recharge-tagged expenses in cycle (notes contain "recharge" case-insensitive)
+    let expensesPaid = 0;
+    expenses.forEach((e) => {
+      if (!inR(e.date)) return;
+      const tag = String(e.notes || '').toLowerCase() + ' ' + String(e.description || '').toLowerCase();
+      if (!tag.includes('recharge')) return;
+      const amtHtg = e.currency === 'USD' ? (Number(e.amount) || 0) * 150 : (Number(e.amount) || 0);
+      expensesPaid += amtHtg;
+    });
+
+    // Recharge-tagged payroll in cycle
+    let payrollPaid = 0;
+    payroll.forEach((p) => {
+      if (p.status !== 'paid') return;
+      if (!inR(p.paidDate)) return;
+      const tag = String(p.notes || '').toLowerCase();
+      if (!tag.includes('recharge')) return;
+      const amtHtg = p.currency === 'USD' ? (Number(p.amount) || 0) * 150 : (Number(p.amount) || 0);
+      payrollPaid += amtHtg;
+    });
+
+    const netAfterCosts = benefitsTotal - commissionsPaid - expensesPaid - payrollPaid;
+    const ceoSplitPct = Number(cfg.ceoSplitPct) || RECHARGE_CEO_SPLIT_PCT;
+    const ceoAmount = Math.round(netAfterCosts * ceoSplitPct);
+    const businessReserve = Math.round(netAfterCosts * (1 - ceoSplitPct));
+
+    const payout = {
+      id: uid('rpay'),
+      cycleStart: cycleStart,
+      cycleEnd: cycleEnd,
+      benefitsTotal: Math.round(benefitsTotal),
+      commissionsPaid: Math.round(commissionsPaid),
+      expensesPaid: Math.round(expensesPaid),
+      payrollPaid: Math.round(payrollPaid),
+      netAfterCosts: Math.round(netAfterCosts),
+      ceoSplitPct,
+      ceoAmount,
+      businessReserve,
+      currency: 'HTG',
+      status,                          // 'proposed' | 'recorded' | 'skipped'
+      recordedDate: status === 'recorded' ? nowISO() : '',
+      notes,
+      createdAt: nowISO(),
+      updatedAt: nowISO(),
+      _pending: true,
+    };
+
+    set((s) => ({
+      business: {
+        ...s.business,
+        rechargePayouts: [payout, ...s.business.rechargePayouts],
+      },
+    }));
+    enqueueAvs(set, get, 'rechargePayout', 'create', stripMeta(payout));
+
+    // Update lastPayoutDate if recorded
+    if (status === 'recorded') {
+      get().saveRechargeConfig({ lastPayoutDate: cycleEnd });
+    }
+    return payout;
+  },
+
+  updateRechargePayout: (id, patch) => {
+    let updated = null;
+    set((s) => ({
+      business: {
+        ...s.business,
+        rechargePayouts: s.business.rechargePayouts.map((p) => {
+          if (p.id !== id) return p;
+          updated = { ...p, ...patch, updatedAt: nowISO(), _pending: true };
+          return updated;
+        }),
+      },
+    }));
+    if (updated) enqueueAvs(set, get, 'rechargePayout', 'update', stripMeta(updated));
+    return updated;
+  },
+
+  removeRechargePayout: (id) => {
+    set((s) => ({
+      business: {
+        ...s.business,
+        rechargePayouts: s.business.rechargePayouts.filter((p) => p.id !== id),
+      },
+    }));
+    enqueueAvs(set, get, 'rechargePayout', 'delete', { id });
+  },
+
+  // ═══════════════════════════════════════════════════════════
   // HYDRATE — fetch everything from AVS server
   // ═══════════════════════════════════════════════════════════
   //
@@ -885,6 +1206,9 @@ export const businessSlice = (set, get) => ({
           businessDebts:       mergeById(local.businessDebts, data.businessDebts),
           businessDebtEvents:  mergeById(local.businessDebtEvents, data.businessDebtEvents),
           businessExpenses:    mergeById(local.businessExpenses, data.businessExpenses),
+          rechargeCommissions: mergeById(local.rechargeCommissions, data.rechargeCommissions),
+          rechargePayouts:     mergeById(local.rechargePayouts, data.rechargePayouts),
+          rechargeConfig:      Array.isArray(data.rechargeConfig) ? data.rechargeConfig : local.rechargeConfig,
           lastSyncAt:        nowISO(),
           syncError:         null,
         },
@@ -932,6 +1256,9 @@ export const businessSlice = (set, get) => ({
             businessDebts:       clearPending(s.business.businessDebts),
             businessDebtEvents:  clearPending(s.business.businessDebtEvents),
             businessExpenses:    clearPending(s.business.businessExpenses),
+            rechargeCommissions: clearPending(s.business.rechargeCommissions),
+            rechargePayouts:     clearPending(s.business.rechargePayouts),
+            rechargeConfig:      clearPending(s.business.rechargeConfig),
             lastSyncAt:        nowISO(),
             syncError:         null,
             syncing:           false,
@@ -946,7 +1273,8 @@ export const businessSlice = (set, get) => ({
         const serverIds = new Set();
         ['leads', 'adSpend', 'staffCommissions', 'cardCosts',
          'staffPayroll', 'contentAdherence', 'clients',
-         'businessDebts', 'businessDebtEvents', 'businessExpenses'].forEach((coll) => {
+         'businessDebts', 'businessDebtEvents', 'businessExpenses',
+         'rechargeCommissions', 'rechargePayouts', 'rechargeConfig'].forEach((coll) => {
           (data[coll] || []).forEach((r) => serverIds.add(r.id));
         });
         const survivors = queue.filter((op) => !serverIds.has(op.id));
