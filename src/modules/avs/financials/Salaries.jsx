@@ -79,10 +79,14 @@ function CommissionsView() {
   }, [commissions]);
 
   const editing = commissions.find((c) => c.id === editId);
+  const bulkPay = useStore((s) => s.bulkPayCommissions);
   const markAllPaid = () => {
     if (pending.length === 0) return;
-    if (!confirm(`Mark all ${pending.length} pending commissions as paid?`)) return;
-    pending.forEach((c) => markPaid(c.id));
+    if (!confirm(`Mark all ${pending.length} pending commissions as paid? This will create one bulk payroll expense for the total.`)) return;
+    const result = bulkPay();
+    if (result.count > 0) {
+      // No alert noise — the UI updates show the result
+    }
   };
 
   return (
@@ -234,93 +238,106 @@ function CommissionEditSheet({ comm, onClose, onDelete }) {
 
 // PAYROLL
 function PayrollView() {
-  const payroll = useStore((s) => s.business?.staffPayroll || []);
-  const recordPayroll = useStore((s) => s.recordPayroll);
-  const markPaid = useStore((s) => s.markPayrollPaid);
-  const markUnpaid = useStore((s) => s.markPayrollUnpaid);
-  const removePayroll = useStore((s) => s.removePayroll);
+  const schedule = useStore((s) => s.business?.payrollSchedule || {});
   const payrollSetupComplete = useStore((s) => s.business?.payrollSetupComplete || false);
+  const businessExpenses = useStore((s) => s.business?.businessExpenses || []);
+  const payUpcoming = useStore((s) => s.payUpcomingPayroll);
   const resetPayrollSetup = useStore((s) => s.resetPayrollSetup);
+  const updateSchedule = useStore((s) => s.updatePayrollScheduleFor);
   const accent = ws().accent;
   const { fmtCompact } = useAvsCurrency();
-  const [adding, setAdding] = useState(false);
-  const [editId, setEditId] = useState(null);
-
-  const addBiweeklyFor = (staffName) => {
-    const today = new Date();
-    const periodEnd = today.toISOString().slice(0, 10);
-    const start = new Date(today); start.setDate(start.getDate() - 14);
-    recordPayroll({
-      staffName, periodStart: start.toISOString().slice(0, 10), periodEnd,
-      amount: SALES_BIWEEKLY_HTG, currency: 'HTG', type: 'salary', notes: 'Bi-weekly salary',
-    });
-  };
-  const addMonthlySarah = () => {
-    const today = new Date();
-    const start = new Date(today); start.setMonth(start.getMonth() - 1);
-    recordPayroll({
-      staffName: 'Sarah', periodStart: start.toISOString().slice(0, 10),
-      periodEnd: today.toISOString().slice(0, 10),
-      amount: CONTENT_MONTHLY_HTG, currency: 'HTG', type: 'salary',
-      notes: 'Monthly content/marketing salary',
-    });
-  };
-
-  const pending = payroll.filter((p) => p.status === 'pending')
-    .sort((a, b) => new Date(a.periodEnd) - new Date(b.periodEnd));
-  const paid = payroll.filter((p) => p.status === 'paid')
-    .sort((a, b) => new Date(b.paidDate) - new Date(a.paidDate)).slice(0, 30);
-  const totalPending = pending.reduce((s, p) => s + Number(p.amount), 0);
-  const editing = payroll.find((p) => p.id === editId);
+  const [editStaff, setEditStaff] = useState(null);
 
   if (!payrollSetupComplete) {
     return <PayrollOnboardingCard />;
   }
 
+  // Compute "upcoming" for each staff — next pay date from lastPaidDate + intervalDays
+  const upcoming = useMemo(() => {
+    return Object.entries(schedule).map(([staffName, cfg]) => {
+      const last = cfg.lastPaidDate ? new Date(cfg.lastPaidDate) : null;
+      const interval = Number(cfg.intervalDays) || 14;
+      let next;
+      if (last && !isNaN(last)) {
+        next = new Date(last);
+        next.setDate(next.getDate() + interval);
+      } else {
+        next = new Date();
+      }
+      const today = new Date(); today.setHours(0,0,0,0);
+      const daysUntil = Math.round((next - today) / (1000 * 60 * 60 * 24));
+      return {
+        staffName,
+        nextPayDate: next,
+        daysUntil,
+        amount: Number(cfg.amount) || 0,
+        currency: cfg.currency || 'HTG',
+        intervalDays: interval,
+        lastPaidDate: cfg.lastPaidDate || null,
+        overdue: daysUntil < 0,
+        dueToday: daysUntil === 0,
+        dueSoon: daysUntil > 0 && daysUntil <= 3,
+      };
+    }).sort((a, b) => a.nextPayDate - b.nextPayDate);
+  }, [schedule]);
+
+  // Recent payroll expenses (category=payroll) — shows history
+  const recentPayrollExpenses = useMemo(() => {
+    return businessExpenses
+      .filter((e) => e.category === 'payroll')
+      .sort((a, b) => new Date(b.date) - new Date(a.date))
+      .slice(0, 20);
+  }, [businessExpenses]);
+
+  const totalUpcoming = upcoming.reduce((s, u) => s + u.amount, 0);
+
   return (
     <div className="space-y-4">
       <div>
-        <div className="text-[10px] uppercase tracking-wider text-muted font-medium mb-2 px-1">Quick add (manual)</div>
-        <div className="grid grid-cols-3 gap-2">
-          <QuickAddButton label="Jémima" sub="2500 HTG" onClick={() => addBiweeklyFor('Jémima')} accent={accent} />
-          <QuickAddButton label="Christelle" sub="2500 HTG" onClick={() => addBiweeklyFor('Christelle')} accent={accent} />
-          <QuickAddButton label="Sarah" sub="7500 HTG" onClick={addMonthlySarah} accent={accent} />
-        </div>
-      </div>
-
-      <div>
         <div className="flex items-center justify-between mb-2 px-1">
           <div className="text-[10px] uppercase tracking-wider text-muted font-medium">
-            Upcoming · {fmtCompact(totalPending, 'HTG')} total
+            Upcoming · {fmtCompact(totalUpcoming, 'HTG')} pending
           </div>
-          <button onClick={() => setAdding(true)}
-            className="text-[11px] font-medium flex items-center gap-1" style={{ color: accent.primary }}>
-            <Plus size={11} /> Custom
-          </button>
         </div>
-        {pending.length === 0 ? (
-          <EmptyCard icon={CalIcon} title="No upcoming payments" hint="Quick-add above or tap Custom to log one" />
+        {upcoming.length === 0 ? (
+          <EmptyCard icon={CalIcon} title="No staff configured" hint="Tap 'Redo setup' below to add staff" />
         ) : (
-          <div className="surface border rounded-2xl overflow-hidden divide-y divide-[var(--border)]">
-            {pending.map((p) => (
-              <PayrollRow key={p.id} pay={p}
-                onPay={() => markPaid(p.id)}
-                onEdit={() => setEditId(p.id)}
-                accent={accent} />
+          <div className="space-y-2">
+            {upcoming.map((u) => (
+              <UpcomingCard key={u.staffName}
+                upcoming={u}
+                onPay={() => {
+                  if (!confirm(`Mark ${u.staffName}'s payroll as paid? Creates a ${fmtCompact(u.amount, u.currency)} expense and rolls the next pay date forward.`)) return;
+                  payUpcoming(u.staffName);
+                }}
+                onEdit={() => setEditStaff(u.staffName)}
+                accent={accent}
+                fmt={fmtCompact} />
             ))}
           </div>
         )}
       </div>
 
-      {paid.length > 0 && (
+      {recentPayrollExpenses.length > 0 && (
         <div>
-          <div className="text-[10px] uppercase tracking-wider text-muted font-medium mb-2 px-1">Recently paid</div>
+          <div className="text-[10px] uppercase tracking-wider text-muted font-medium mb-2 px-1">
+            Recently paid
+          </div>
           <div className="surface border rounded-2xl overflow-hidden divide-y divide-[var(--border)]">
-            {paid.map((p) => (
-              <PayrollRow key={p.id} pay={p} paid
-                onUnpay={() => markUnpaid(p.id)}
-                onEdit={() => setEditId(p.id)}
-                accent={accent} />
+            {recentPayrollExpenses.map((e) => (
+              <div key={e.id} className="px-3 py-2.5 flex items-center gap-3">
+                <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0"
+                  style={{ backgroundColor: '#3d8b5f22', color: '#3d8b5f' }}>
+                  <Check size={11} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium truncate">{e.description}</div>
+                  <div className="text-[11px] text-muted">{fmtDate(e.date)}</div>
+                </div>
+                <div className="font-display text-sm">
+                  {fmtCompact(e.amount, e.currency || 'HTG')}
+                </div>
+              </div>
             ))}
           </div>
         </div>
@@ -329,32 +346,129 @@ function PayrollView() {
       <div className="surface border rounded-2xl p-3 text-[11px] text-muted">
         <div className="font-medium mb-1.5 flex items-center justify-between" style={{ color: 'var(--text)' }}>
           Payment cadence
-          <button onClick={resetPayrollSetup}
+          <button onClick={() => {
+            if (confirm('Redo payroll setup? Your current schedule will be replaced.')) {
+              resetPayrollSetup();
+            }
+          }}
             className="text-[10px] font-medium" style={{ color: accent.primary }}>
             Redo setup
           </button>
         </div>
         <div className="space-y-0.5">
-          <div>• Sales · 2500 HTG every 2 weeks · Jémima ↔ Christelle alternate</div>
-          <div>• Content (Sarah) · 7500 HTG monthly</div>
-          <div>• Ops (Marc) · per-card, see Commissions tab</div>
+          {Object.entries(schedule).length === 0
+            ? <div>No staff configured yet</div>
+            : Object.entries(schedule).map(([name, cfg]) => (
+              <div key={name}>
+                • {name} · {fmtCompact(cfg.amount, cfg.currency || 'HTG')} every {cfg.intervalDays} days
+              </div>
+            ))}
+        </div>
+        <div className="mt-2 pt-2 border-t border-[var(--border)]">
+          Payments don't appear in P&L until you tap "Paid" on the upcoming card — they then become a payroll expense.
         </div>
       </div>
 
       <AnimatePresence>
-        {adding && <PayrollAddSheet onClose={() => setAdding(false)} />}
-        {editing && (
-          <PayrollEditSheet pay={editing}
-            onClose={() => setEditId(null)}
-            onDelete={() => {
-              if (confirm(`Delete payroll for ${editing.staffName}?`)) {
-                removePayroll(editing.id);
-                setEditId(null);
-              }
-            }} />
+        {editStaff && (
+          <PayrollScheduleEditSheet
+            staffName={editStaff}
+            cfg={schedule[editStaff]}
+            onSave={(patch) => { updateSchedule(editStaff, patch); setEditStaff(null); }}
+            onClose={() => setEditStaff(null)} />
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+function UpcomingCard({ upcoming, onPay, onEdit, accent, fmt }) {
+  const { staffName, daysUntil, amount, currency, nextPayDate, overdue, dueToday, dueSoon, lastPaidDate } = upcoming;
+  const color = overdue ? '#c2452f' : dueToday ? '#d4a942' : dueSoon ? '#d4a942' : 'var(--text-muted, #7a8a8c)';
+  const bg = overdue ? '#c2452f15' : dueToday ? '#d4a94215' : 'transparent';
+  const label = overdue
+    ? `Overdue by ${Math.abs(daysUntil)} ${Math.abs(daysUntil) === 1 ? 'day' : 'days'}`
+    : dueToday ? 'Due today'
+    : daysUntil === 1 ? 'Due tomorrow'
+    : `In ${daysUntil} days`;
+  return (
+    <div className="surface border rounded-2xl p-3"
+      style={overdue || dueToday ? { borderColor: color + '66', backgroundColor: bg } : undefined}>
+      <div className="flex items-center gap-3">
+        <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 text-sm font-display"
+          style={{ backgroundColor: accent.soft, color: accent.primary }}>
+          {staffName[0]}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="font-medium text-sm">{staffName}</span>
+            <span className="text-[11px]" style={{ color }}>{label}</span>
+          </div>
+          <div className="text-[11px] text-muted truncate">
+            {fmtDate(nextPayDate)} · last paid {lastPaidDate ? fmtDate(lastPaidDate) : '—'}
+          </div>
+        </div>
+        <div className="text-right shrink-0">
+          <div className="font-display text-base leading-tight">{fmt(amount, currency)}</div>
+        </div>
+      </div>
+      <div className="flex gap-2 mt-2.5">
+        <button onClick={onPay}
+          className="flex-1 py-1.5 rounded-lg text-xs font-medium"
+          style={{ backgroundColor: accent.primary, color: accent.primaryFg }}>
+          Mark paid
+        </button>
+        <button onClick={onEdit}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium border"
+          style={{ borderColor: 'var(--border)', color: 'var(--text-muted, #7a8a8c)' }}>
+          Edit
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PayrollScheduleEditSheet({ staffName, cfg, onSave, onClose }) {
+  const accent = ws().accent;
+  const [form, setForm] = useState({
+    lastPaidDate: cfg?.lastPaidDate || '',
+    intervalDays: cfg?.intervalDays || 14,
+    amount: cfg?.amount || 0,
+    currency: cfg?.currency || 'HTG',
+  });
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const handleSave = () => {
+    onSave({
+      lastPaidDate: form.lastPaidDate,
+      intervalDays: Number(form.intervalDays),
+      amount: Number(form.amount),
+      currency: form.currency,
+    });
+  };
+  return (
+    <BottomSheet onClose={onClose} title={`Edit · ${staffName}`} onSave={handleSave}>
+      <div className="surface border rounded-2xl overflow-hidden divide-y divide-[var(--border)]">
+        <Field label="Last paid date">
+          <input type="date" value={form.lastPaidDate}
+            onChange={(e) => set('lastPaidDate', e.target.value)} className="form-input" />
+        </Field>
+        <Field label="Pay every (days)">
+          <input type="number" inputMode="numeric" value={form.intervalDays}
+            onChange={(e) => set('intervalDays', e.target.value)} className="form-input" />
+        </Field>
+        <Field label="Amount">
+          <input type="number" inputMode="decimal" value={form.amount}
+            onChange={(e) => set('amount', e.target.value)} className="form-input" />
+        </Field>
+        <Field label="Currency">
+          <select value={form.currency} onChange={(e) => set('currency', e.target.value)} className="form-input">
+            <option value="HTG">HTG</option>
+            <option value="USD">USD</option>
+            <option value="HTD">HTD</option>
+          </select>
+        </Field>
+      </div>
+    </BottomSheet>
   );
 }
 
