@@ -49,11 +49,12 @@ export default function Commissions() {
   }, [commissions]);
 
   const editing = commissions.find((c) => c.id === editId);
+  const bulkPay = useStore((s) => s.bulkPayRechargeCommissions);
 
   const markAllPaid = () => {
     if (pending.length === 0) return;
-    if (!confirm(`Mark all ${pending.length} pending commissions as paid?`)) return;
-    pending.forEach((c) => markPaid(c.id));
+    if (!confirm(`Mark all ${pending.length} pending commissions as paid? This will create one bulk payroll expense for the total.`)) return;
+    bulkPay();
   };
 
   const runBackfill = () => {
