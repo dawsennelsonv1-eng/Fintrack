@@ -42,7 +42,9 @@ function addDays(dateStr, days) {
 export default function Payouts() {
   const accent = ws().accent;
   const { fmtCompact } = useAvsCurrency();
-  const config = useStore((s) => s.getRechargeConfig());
+  // BUG FIX: don't call an action inside a selector. Select raw state,
+  // compute the config object inside useMemo so it's stable across renders.
+  const rechargeConfigArr = useStore((s) => s.business?.rechargeConfig || []);
   const saveConfig = useStore((s) => s.saveRechargeConfig);
   const recordPayout = useStore((s) => s.recordRechargePayout);
   const updatePayout = useStore((s) => s.updateRechargePayout);
@@ -52,6 +54,22 @@ export default function Payouts() {
   const commissions = useStore((s) => s.business?.rechargeCommissions || []);
   const expenses = useStore((s) => s.business?.businessExpenses || []);
   const addTransaction = useStore((s) => s.addTransaction);
+
+  const config = useMemo(() => {
+    if (Array.isArray(rechargeConfigArr) && rechargeConfigArr.length > 0) {
+      return rechargeConfigArr[0];
+    }
+    return {
+      id: 'default',
+      cycleDays: 30,
+      ceoSplitPct: 0.75,
+      commissionRate: 0.25,
+      cycleStartDate: todayISO(),
+      lastPayoutDate: '',
+      currency: 'HTG',
+      notes: '',
+    };
+  }, [rechargeConfigArr]);
 
   const [showConfig, setShowConfig] = useState(false);
   const [editId, setEditId] = useState(null);
