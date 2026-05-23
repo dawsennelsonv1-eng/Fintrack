@@ -114,6 +114,7 @@ const FR_TO_EN = {
     'admin_flag': 'adminFlag',
     'Pay_Statut_Ops': 'payStatusOps',
     'Pay_Statut_Sales': 'payStatusSales',
+    'Tag': 'tag',  // Wise/Meru tag — used to attribute Recharge orders to clients
   },
   staff: {  // UTILISATEUR
     'Nom': 'id',          // staff identified by Nom
@@ -273,6 +274,16 @@ export const businessSlice = (set, get) => ({
     // generation of upcoming payroll entries.
     payrollSchedule:  {},
     payrollSetupComplete: false,
+
+    // ─── Ship 3: per-workspace UI filter ────────────────────
+    // `sinceDate` is an ISO 'YYYY-MM-DD' string or null. When set,
+    // modules show only rows whose date >= sinceDate. Pure presentation
+    // filter — data on the sheet is untouched, reversible at any time.
+    // Personal workspace ignores this entirely.
+    workspaceFilters: {
+      avs:      { sinceDate: null },
+      recharge: { sinceDate: null },
+    },
 
     // ─── Sync state (AVS-scoped) ────────────────────────────
     queue:        [],
@@ -451,6 +462,107 @@ export const businessSlice = (set, get) => ({
       },
     }));
     if (updated) enqueueAvs(set, get, 'staffCommission', 'update', stripMeta(updated));
+  },
+
+  // ─── Ship 3 ─────────────────────────────────────────────────
+  // Bulk-pay all pending AVS Solution commissions, AND create ONE
+  // BUSINESS_EXPENSES row for the total (category 'payroll'). This
+  // makes the payout appear once in P&L instead of being counted
+  // separately as a commission + payroll line.
+  //
+  // Returns { count, total, expense } — useful for UI feedback.
+  bulkPayCommissions: () => {
+    const pending = (get().business.staffCommissions || [])
+      .filter((c) => c.status === 'pending');
+    if (pending.length === 0) return { count: 0, total: 0, expense: null };
+
+    // Group by currency for the expense line; default HTG
+    const totalHtg = pending.reduce((s, c) => {
+      const amt = Number(c.commissionAmount) || 0;
+      return s + (c.currency === 'USD' ? amt * 150 : amt);
+    }, 0);
+
+    const today = nowISO();
+    const description = pending.length === 1
+      ? `Commission · ${pending[0].staffName}`
+      : `Commissions × ${pending.length} (${[...new Set(pending.map((c) => c.staffName))].join(', ')})`;
+
+    // Mark all paid in one atomic update
+    set((s) => ({
+      business: {
+        ...s.business,
+        staffCommissions: s.business.staffCommissions.map((c) => {
+          if (c.status !== 'pending') return c;
+          return { ...c, status: 'paid', paidDate: today, updatedAt: today, _pending: true };
+        }),
+      },
+    }));
+    pending.forEach((c) => {
+      enqueueAvs(set, get, 'staffCommission', 'update', stripMeta({
+        ...c, status: 'paid', paidDate: today, updatedAt: today,
+      }));
+    });
+
+    // Create the bulk expense
+    const expense = get().addBusinessExpense({
+      date: today,
+      category: 'payroll',
+      description,
+      amount: Math.round(totalHtg),
+      currency: 'HTG',
+      recurring: 'one-off',
+      paidTo: pending.length === 1 ? pending[0].staffName : 'Staff',
+      paymentMethod: '',
+      notes: `Bulk commission payout · ${pending.length} entries · auto-created`,
+    });
+
+    return { count: pending.length, total: totalHtg, expense };
+  },
+
+  // Same for Recharge commissions
+  bulkPayRechargeCommissions: () => {
+    const pending = (get().business.rechargeCommissions || [])
+      .filter((c) => c.status === 'pending');
+    if (pending.length === 0) return { count: 0, total: 0, expense: null };
+
+    const totalHtg = pending.reduce((s, c) => {
+      const amt = Number(c.commissionAmount) || 0;
+      return s + (c.currency === 'USD' ? amt * 150 : amt);
+    }, 0);
+
+    const today = nowISO();
+    const description = pending.length === 1
+      ? `Recharge commission · ${pending[0].staffName}`
+      : `Recharge commissions × ${pending.length} (Marc)`;
+
+    set((s) => ({
+      business: {
+        ...s.business,
+        rechargeCommissions: s.business.rechargeCommissions.map((c) => {
+          if (c.status !== 'pending') return c;
+          return { ...c, status: 'paid', paidDate: today, updatedAt: today, _pending: true };
+        }),
+      },
+    }));
+    pending.forEach((c) => {
+      enqueueAvs(set, get, 'rechargeCommission', 'update', stripMeta({
+        ...c, status: 'paid', paidDate: today, updatedAt: today,
+      }));
+    });
+
+    const expense = get().addBusinessExpense({
+      date: today,
+      category: 'payroll',
+      description,
+      amount: Math.round(totalHtg),
+      currency: 'HTG',
+      recurring: 'one-off',
+      paidTo: 'Marc',
+      paymentMethod: '',
+      notes: `Bulk recharge commission payout · ${pending.length} orders · auto-created · recharge`,
+    });
+
+    return { count: pending.length, total: totalHtg, expense };
   },
 
   // ═══════════════════════════════════════════════════════════
@@ -651,49 +763,93 @@ export const businessSlice = (set, get) => ({
   // Schedule shape:
   //   { 'Jémima': { nextPayDate: 'YYYY-MM-DD', intervalDays: 14, amount: 2500, currency: 'HTG' }, ... }
   //
+  // Ship 3 — Payroll v3 (simplified)
+  //
+  // No more pre-generating 6 months of pending entries. We just store:
+  //   payrollSchedule[staffName] = { lastPaidDate, intervalDays, amount, currency }
+  // and compute the next pay date on the fly. Tapping "Paid" creates a
+  // BUSINESS_EXPENSES row (category payroll) and advances lastPaidDate.
+  //
   setupPayrollSchedule: (config) => {
-    const HORIZON_MONTHS = 6;
-    const horizon = new Date();
-    horizon.setMonth(horizon.getMonth() + HORIZON_MONTHS);
+    // Normalize config: ensure each staff has lastPaidDate (derive from
+    // nextPayDate - intervalDays if not provided, since the onboarding
+    // card asks for nextPayDate).
+    const normalized = {};
+    Object.entries(config || {}).forEach(([staffName, cfg]) => {
+      let lastPaidDate = cfg.lastPaidDate || '';
+      if (!lastPaidDate && cfg.nextPayDate && cfg.intervalDays) {
+        const next = new Date(cfg.nextPayDate);
+        next.setDate(next.getDate() - Number(cfg.intervalDays));
+        lastPaidDate = next.toISOString().slice(0, 10);
+      }
+      normalized[staffName] = {
+        lastPaidDate,
+        intervalDays: Number(cfg.intervalDays) || 14,
+        amount: Number(cfg.amount) || 0,
+        currency: cfg.currency || 'HTG',
+      };
+    });
 
     set((s) => ({
       business: {
         ...s.business,
-        payrollSchedule: config,
+        payrollSchedule: normalized,
         payrollSetupComplete: true,
       },
     }));
+  },
 
-    // Generate upcoming entries for each staff member
-    Object.entries(config).forEach(([staffName, cfg]) => {
-      if (!cfg.nextPayDate || !cfg.intervalDays) return;
-      const start = new Date(cfg.nextPayDate);
-      let cursor = new Date(start);
-      while (cursor <= horizon) {
-        const dateStr = cursor.toISOString().slice(0, 10);
-        // Skip if already scheduled (avoids duplicates on re-setup)
-        const exists = get().business.staffPayroll.some((p) =>
-          p.staffName === staffName &&
-          p.status === 'pending' &&
-          String(p.periodEnd).slice(0, 10) === dateStr
-        );
-        if (!exists) {
-          const periodStart = new Date(cursor);
-          periodStart.setDate(periodStart.getDate() - cfg.intervalDays);
-          get().recordPayroll({
-            staffName,
-            type: 'salary',
-            amount: cfg.amount,
-            currency: cfg.currency || 'HTG',
-            periodStart: periodStart.toISOString().slice(0, 10),
-            periodEnd: dateStr,
-            notes: 'Auto-generated · ' + (cfg.intervalDays === 14 ? 'bi-weekly' : cfg.intervalDays === 30 ? 'monthly' : `${cfg.intervalDays}d cadence`),
-            status: 'pending',
-          });
-        }
-        cursor.setDate(cursor.getDate() + cfg.intervalDays);
-      }
+  // Update one staff member's schedule (e.g. you changed their cadence)
+  updatePayrollScheduleFor: (staffName, patch) => {
+    set((s) => ({
+      business: {
+        ...s.business,
+        payrollSchedule: {
+          ...(s.business.payrollSchedule || {}),
+          [staffName]: {
+            ...((s.business.payrollSchedule || {})[staffName] || {}),
+            ...patch,
+          },
+        },
+      },
+    }));
+  },
+
+  // Pay the upcoming payroll for a staff member — creates a BUSINESS_EXPENSES
+  // row and advances lastPaidDate by intervalDays.
+  payUpcomingPayroll: (staffName) => {
+    const schedule = get().business.payrollSchedule || {};
+    const cfg = schedule[staffName];
+    if (!cfg) return null;
+    const today = nowISO().slice(0, 10);
+    const amount = Number(cfg.amount) || 0;
+    if (amount <= 0) return null;
+
+    // Create the BUSINESS_EXPENSES row
+    const expense = get().addBusinessExpense({
+      date: today,
+      category: 'payroll',
+      description: `Payroll · ${staffName}`,
+      amount,
+      currency: cfg.currency || 'HTG',
+      recurring: 'one-off',
+      paidTo: staffName,
+      paymentMethod: '',
+      notes: `Payroll cycle · ${cfg.intervalDays}d`,
     });
+
+    // Advance lastPaidDate to today
+    set((s) => ({
+      business: {
+        ...s.business,
+        payrollSchedule: {
+          ...(s.business.payrollSchedule || {}),
+          [staffName]: { ...cfg, lastPaidDate: today },
+        },
+      },
+    }));
+
+    return expense;
   },
 
   // Allow user to skip the onboarding card without setting up schedules
@@ -1350,6 +1506,39 @@ export const businessSlice = (set, get) => ({
       },
     }));
     enqueueAvs(set, get, 'rechargePayout', 'delete', { id });
+  },
+
+  // ═══════════════════════════════════════════════════════════
+  // WORKSPACE FILTER (Ship 3)
+  // ═══════════════════════════════════════════════════════════
+  //
+  // Per-workspace UI filter. Pure presentation — never deletes data.
+  // Modules use `applyWorkspaceFilter(workspace, list, dateField)` to
+  // exclude older rows when a filter is active. Toggling the filter
+  // off restores instant access to everything.
+  //
+  setWorkspaceFilter: (workspace, sinceDate) => {
+    set((s) => ({
+      business: {
+        ...s.business,
+        workspaceFilters: {
+          ...(s.business.workspaceFilters || {}),
+          [workspace]: { sinceDate: sinceDate || null },
+        },
+      },
+    }));
+  },
+
+  clearWorkspaceFilter: (workspace) => {
+    set((s) => ({
+      business: {
+        ...s.business,
+        workspaceFilters: {
+          ...(s.business.workspaceFilters || {}),
+          [workspace]: { sinceDate: null },
+        },
+      },
+    }));
   },
 
   // ═══════════════════════════════════════════════════════════
