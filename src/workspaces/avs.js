@@ -1,8 +1,6 @@
 // src/workspaces/avs.js
 //
-// Tier 5c — same registry shape as 5a; modules now point to real
-// implementations instead of placeholders for Clients, Ads, Financials.
-// Dashboard and Calendar still placeholder (next tier).
+// Ship 3 — Kanban column order updated, default view = list (Table).
 //
 import { lazy } from 'react';
 
@@ -42,11 +40,15 @@ export default {
 
   defaultTab: 'dashboard',
 
+  // Default view for Clients module — 'list' (Table) or 'kanban'
+  defaultClientsView: 'list',
+
+  // Kanban column order: Terminé → Envoi Atelier → Rdv Fixé → À Faire → Perdu
   leadStatuses: [
-    { id: 'todo',        label: '🔴 À Faire',       color: '#c2452f' },
-    { id: 'rdv',         label: '📅 Rdv Fixé',      color: '#5b8def' },
-    { id: 'atelier',     label: '🟡 Envoi Atelier', color: '#d4a942' },
     { id: 'terminé',     label: '✅ Terminé',        color: '#3d8b5f' },
+    { id: 'atelier',     label: '🟡 Envoi Atelier', color: '#d4a942' },
+    { id: 'rdv',         label: '📅 Rdv Fixé',      color: '#5b8def' },
+    { id: 'todo',        label: '🔴 À Faire',       color: '#c2452f' },
     { id: 'perdu',       label: '❌ Perdu',          color: '#7a8a8c' },
   ],
 
@@ -63,10 +65,10 @@ export default {
   staffRoles: ['Sales', 'Ops', 'Content', 'Admin'],
 
   defaultStaff: [
-    { name: 'Marc',      role: 'Ops',     commissionType: 'per_card' },
-    { name: 'Jémima',    role: 'Sales',   commissionType: 'biweekly' },
-    { name: 'Christelle', role: 'Sales',  commissionType: 'biweekly' },
-    { name: 'Sarah',     role: 'Content', commissionType: 'monthly' },
-    { name: 'Dawsen',    role: 'Admin',   commissionType: 'owner' },
+    { name: 'Marc',       role: 'Ops',     commissionType: 'per_card' },
+    { name: 'Jémima',     role: 'Sales',   commissionType: 'biweekly' },
+    { name: 'Christelle', role: 'Sales',   commissionType: 'biweekly' },
+    { name: 'Sarah',      role: 'Content', commissionType: 'monthly'  },
+    { name: 'Dawsen',     role: 'Admin',   commissionType: 'owner'    },
   ],
 };
