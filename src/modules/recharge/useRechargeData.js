@@ -5,6 +5,7 @@
 //
 import { useMemo } from 'react';
 import { useStore } from '../../store/useStore';
+import { useWorkspaceFilter, applyDateFilter } from '../../lib/workspaceFilter';
 
 const HTG_PER_USD = 150;
 
@@ -96,11 +97,16 @@ export function isTermine(order) {
 
 // ─── MAIN HOOK ───────────────────────────────────────────
 export function useRechargeData(period = 'month') {
-  const orders = useStore((s) => s.business?.rechargeOrders || []);
-  const commissions = useStore((s) => s.business?.rechargeCommissions || []);
+  const allOrders = useStore((s) => s.business?.rechargeOrders || []);
+  const allCommissions = useStore((s) => s.business?.rechargeCommissions || []);
   const payouts = useStore((s) => s.business?.rechargePayouts || []);
   const businessExpenses = useStore((s) => s.business?.businessExpenses || []);
   const staffPayroll = useStore((s) => s.business?.staffPayroll || []);
+  const filter = useWorkspaceFilter('recharge');
+
+  // Apply Ship-3 workspace filter to orders & commissions
+  const orders = useMemo(() => applyDateFilter(allOrders, filter, 'date'), [allOrders, filter]);
+  const commissions = useMemo(() => applyDateFilter(allCommissions, filter, 'date'), [allCommissions, filter]);
 
   const stats = useMemo(() => {
     const r = periodRange(period);

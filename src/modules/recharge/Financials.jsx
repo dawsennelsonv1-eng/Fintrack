@@ -1,22 +1,25 @@
 // src/modules/recharge/Financials.jsx
 //
-// Three sub-tabs:
+// Four sub-tabs:
 //   • P&L         — period-toggle profit math
-//   • Commissions — Marc's 25% per Terminé order (mark paid/unpaid, edit, delete)
-//   • Payouts     — CEO payout cycle (proposes 15/30 days, you confirm)
+//   • Commissions — Marc's 25% per Terminé order
+//   • Payouts     — CEO payout cycle
+//   • Attribution — Tag-based ROAS for Recharge ads
 //
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { PieChart, Coins, Wallet } from 'lucide-react';
+import { PieChart, Coins, Wallet, Target } from 'lucide-react';
 import { getWorkspace } from '../../workspaces/registry';
 import PnL from './financials/PnL';
 import Commissions from './financials/Commissions';
 import Payouts from './financials/Payouts';
+import Attribution from './financials/Attribution';
 
 const TABS = [
   { id: 'pnl',         label: 'P&L',         icon: PieChart },
   { id: 'commissions', label: 'Commissions', icon: Coins },
   { id: 'payouts',     label: 'Payouts',     icon: Wallet },
+  { id: 'attribution', label: 'Attribution', icon: Target },
 ];
 
 export default function RechargeFinancials() {
@@ -58,6 +61,7 @@ export default function RechargeFinancials() {
           {sub === 'pnl'         && <PnL />}
           {sub === 'commissions' && <Commissions />}
           {sub === 'payouts'     && <Payouts />}
+          {sub === 'attribution' && <Attribution />}
         </motion.div>
       </AnimatePresence>
     </div>

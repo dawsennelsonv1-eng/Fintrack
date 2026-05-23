@@ -17,6 +17,8 @@ import { useStore } from '../../store/useStore';
 import { getWorkspace } from '../../workspaces/registry';
 import { useRechargeData, clientAnalytics, parseDate, isTermine } from './useRechargeData';
 import { useAvsCurrency } from '../avs/useAvsCurrency';
+import { useWorkspaceFilter, applyDateFilter } from '../../lib/workspaceFilter';
+import FilterPill from '../../components/FilterPill';
 
 const ws = () => getWorkspace('recharge');
 const ease = [0.16, 1, 0.3, 1];
@@ -28,6 +30,7 @@ export default function RechargeHome() {
   const setActiveTab = useStore((s) => s.setActiveTab);
   const data = useRechargeData(period);
   const { fmtCompact } = useAvsCurrency();
+  const wsFilter = useWorkspaceFilter('recharge');
 
   return (
     <main className="max-w-2xl mx-auto px-5 pt-4 pb-32">
@@ -35,7 +38,10 @@ export default function RechargeHome() {
         <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1">
           AVS Recharge
         </div>
-        <h1 className="font-display text-3xl leading-tight">Command center</h1>
+        <div className="flex items-center gap-2">
+          <h1 className="font-display text-3xl leading-tight">Command center</h1>
+          <FilterPill filter={wsFilter} />
+        </div>
       </motion.section>
 
       <PeriodToggle period={period} onChange={setPeriod} accent={accent} />
@@ -213,9 +219,12 @@ function KPI({ label, value, sub, color, bg }) {
 }
 
 function BenefitsVsExpenses({ period, accent, fmt }) {
-  const orders = useStore((s) => s.business?.rechargeOrders || []);
-  const commissions = useStore((s) => s.business?.rechargeCommissions || []);
+  const rawOrders = useStore((s) => s.business?.rechargeOrders || []);
+  const rawCommissions = useStore((s) => s.business?.rechargeCommissions || []);
   const expenses = useStore((s) => s.business?.businessExpenses || []);
+  const wsFilter = useWorkspaceFilter('recharge');
+  const orders = useMemo(() => applyDateFilter(rawOrders, wsFilter, 'date'), [rawOrders, wsFilter]);
+  const commissions = useMemo(() => applyDateFilter(rawCommissions, wsFilter, 'date'), [rawCommissions, wsFilter]);
 
   const data = useMemo(() => {
     // Build buckets for last N days/weeks based on period
@@ -315,7 +324,9 @@ function Dot({ color, label }) {
 }
 
 function TopClients({ accent, fmt, onTapAll }) {
-  const orders = useStore((s) => s.business?.rechargeOrders || []);
+  const rawOrders = useStore((s) => s.business?.rechargeOrders || []);
+  const wsFilter = useWorkspaceFilter('recharge');
+  const orders = useMemo(() => applyDateFilter(rawOrders, wsFilter, 'date'), [rawOrders, wsFilter]);
   const top = useMemo(() => {
     return clientAnalytics(orders)
       .filter((c) => c.benefits > 0)

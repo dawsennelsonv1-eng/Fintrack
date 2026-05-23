@@ -13,6 +13,8 @@ import { useStore } from '../../store/useStore';
 import { getWorkspace } from '../../workspaces/registry';
 import { parseDate, isTermine } from './useRechargeData';
 import { useAvsCurrency } from '../avs/useAvsCurrency';
+import { useWorkspaceFilter, applyDateFilter } from '../../lib/workspaceFilter';
+import FilterPill from '../../components/FilterPill';
 
 const ws = () => getWorkspace('recharge');
 
@@ -30,7 +32,9 @@ function fmtDate(s) {
 }
 
 export default function RechargeOrders() {
-  const orders = useStore((s) => s.business?.rechargeOrders || []);
+  const allOrders = useStore((s) => s.business?.rechargeOrders || []);
+  const wsFilter = useWorkspaceFilter('recharge');
+  const orders = useMemo(() => applyDateFilter(allOrders, wsFilter, 'date'), [allOrders, wsFilter]);
   const accent = ws().accent;
   const { fmtCompact } = useAvsCurrency();
   const [filter, setFilter] = useState('all');
@@ -64,7 +68,10 @@ export default function RechargeOrders() {
   return (
     <main className="max-w-2xl mx-auto px-5 pt-4 pb-32">
       <div className="mb-4">
-        <h1 className="font-display text-3xl leading-tight">Orders</h1>
+        <div className="flex items-center gap-2">
+          <h1 className="font-display text-3xl leading-tight">Orders</h1>
+          <FilterPill filter={wsFilter} />
+        </div>
         <p className="text-xs text-muted mt-0.5">Marc manages from his app · this is your read view</p>
       </div>
 

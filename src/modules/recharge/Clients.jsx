@@ -15,6 +15,8 @@ import { useStore } from '../../store/useStore';
 import { getWorkspace } from '../../workspaces/registry';
 import { clientAnalytics, isTermine } from './useRechargeData';
 import { useAvsCurrency } from '../avs/useAvsCurrency';
+import { useWorkspaceFilter, applyDateFilter } from '../../lib/workspaceFilter';
+import FilterPill from '../../components/FilterPill';
 
 const ws = () => getWorkspace('recharge');
 
@@ -30,7 +32,9 @@ function fmtDate(d) {
 }
 
 export default function RechargeClients() {
-  const orders = useStore((s) => s.business?.rechargeOrders || []);
+  const allOrders = useStore((s) => s.business?.rechargeOrders || []);
+  const wsFilter = useWorkspaceFilter('recharge');
+  const orders = useMemo(() => applyDateFilter(allOrders, wsFilter, 'date'), [allOrders, wsFilter]);
   const accent = ws().accent;
   const { fmtCompact } = useAvsCurrency();
   const [sortMode, setSortMode] = useState('benefits');
@@ -215,7 +219,9 @@ function ClientRow({ client, rank, sortMode, accent, fmt, onTap }) {
 function ClientDetail({ client, onClose }) {
   const accent = ws().accent;
   const { fmtCompact } = useAvsCurrency();
-  const allOrders = useStore((s) => s.business?.rechargeOrders || []);
+  const rawOrders = useStore((s) => s.business?.rechargeOrders || []);
+  const wsFilter = useWorkspaceFilter('recharge');
+  const allOrders = useMemo(() => applyDateFilter(rawOrders, wsFilter, 'date'), [rawOrders, wsFilter]);
 
   const clientOrders = useMemo(() => {
     return allOrders

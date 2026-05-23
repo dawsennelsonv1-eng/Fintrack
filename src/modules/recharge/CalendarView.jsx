@@ -11,6 +11,8 @@ import { useStore } from '../../store/useStore';
 import { getWorkspace } from '../../workspaces/registry';
 import { parseDate, isTermine } from './useRechargeData';
 import { useAvsCurrency } from '../avs/useAvsCurrency';
+import { useWorkspaceFilter, applyDateFilter } from '../../lib/workspaceFilter';
+import FilterPill from '../../components/FilterPill';
 
 const WEEK = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 const ws = () => getWorkspace('recharge');
@@ -25,7 +27,9 @@ function isSameDay(a, b) {
 }
 
 export default function RechargeCalendar() {
-  const orders = useStore((s) => s.business?.rechargeOrders || []);
+  const rawOrders = useStore((s) => s.business?.rechargeOrders || []);
+  const wsFilter = useWorkspaceFilter('recharge');
+  const orders = useMemo(() => applyDateFilter(rawOrders, wsFilter, 'date'), [rawOrders, wsFilter]);
   const accent = ws().accent;
   const { fmtCompact } = useAvsCurrency();
 
@@ -101,7 +105,10 @@ export default function RechargeCalendar() {
           <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1">
             Calendar
           </div>
-          <h1 className="font-display text-3xl leading-tight">Schedule</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="font-display text-3xl leading-tight">Schedule</h1>
+            <FilterPill filter={wsFilter} />
+          </div>
         </div>
         <button onClick={goToday}
           className="px-3 py-1.5 rounded-full text-[11px] font-medium"
