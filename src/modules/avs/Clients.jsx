@@ -22,6 +22,8 @@ import {
 import { useStore } from '../../store/useStore';
 import { getWorkspace } from '../../workspaces/registry';
 import { useAvsCurrency } from './useAvsCurrency';
+import { useWorkspaceFilter, applyDateFilter } from '../../lib/workspaceFilter';
+import FilterPill from '../../components/FilterPill';
 
 const ws = () => getWorkspace('avs');
 
@@ -29,8 +31,13 @@ const ws = () => getWorkspace('avs');
 // MAIN COMPONENT
 // ════════════════════════════════════════════════════════════════════
 export default function AvsClients() {
-  const leads = useStore((s) => s.business?.leads || []);
-  const [view, setView] = useState('kanban');         // 'kanban' | 'list'
+  const allLeads = useStore((s) => s.business?.leads || []);
+  const wsFilter = useWorkspaceFilter('avs');
+  const leads = useMemo(
+    () => applyDateFilter(allLeads, wsFilter, 'date'),
+    [allLeads, wsFilter]
+  );
+  const [view, setView] = useState(ws().defaultClientsView || 'list');
   const [filter, setFilter] = useState('all');         // 'all' | 'leads' | 'clients'
   const [search, setSearch] = useState('');
   const [editingId, setEditingId] = useState(null);    // open detail
@@ -61,7 +68,10 @@ export default function AvsClients() {
       {/* Header row */}
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h1 className="font-display text-2xl leading-tight">Clients</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="font-display text-2xl leading-tight">Clients</h1>
+            <FilterPill filter={wsFilter} />
+          </div>
           <p className="text-xs text-muted mt-0.5">
             {filtered.length} {filter === 'clients' ? 'clients' : 'leads'} ·{' '}
             {leads.filter((l) => l.leadStatus === '✅ Terminé').length} closed

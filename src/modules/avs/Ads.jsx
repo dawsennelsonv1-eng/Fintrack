@@ -43,6 +43,9 @@ export default function AvsAds() {
 
   const filtered = useMemo(() => {
     return adSpend.filter((a) => {
+      // Workspace scope: legacy rows with no workspace = AVS by default
+      const aw = a.workspace || 'avs';
+      if (aw !== 'avs') return false;
       if (kindFilter === 'paid' && a.kind !== 'paid') return false;
       if (kindFilter === 'organic' && a.kind !== 'organic') return false;
       return true;
@@ -65,6 +68,9 @@ export default function AvsAds() {
       const spendUSD = campaign.spendCurrency === 'HTG'
         ? Number(campaign.spendAmount) / HTG_PER_USD
         : Number(campaign.spendAmount);
+      // Ship 3: only count actually-paid spend in the "money out" math.
+      // Pending ones surface in Debts instead.
+      const spendUSDPaid = campaign.paymentStatus === 'pending' ? 0 : spendUSD;
       const roas = spendUSD > 0 ? revenueUSD / spendUSD : null;
       const conversionRate = matches.length > 0
         ? completed.length / matches.length
@@ -75,6 +81,7 @@ export default function AvsAds() {
         conversions: completed.length,
         revenueUSD,
         spendUSD,
+        spendUSDPaid,
         roas,
         conversionRate,
       };
@@ -279,6 +286,12 @@ function CampaignRow({ campaign, onOpen, accent }) {
             {campaign.kind === 'paid' && campaign.spendUSD > 0 && (
               <> · ${campaign.spendUSD.toFixed(0)}</>
             )}
+            {campaign.paymentStatus === 'pending' && campaign.kind === 'paid' && (
+              <span className="ml-1.5 text-[9px] px-1.5 py-0.5 rounded-md font-medium uppercase tracking-wider"
+                style={{ backgroundColor: '#d4a94222', color: '#d4a942' }}>
+                owed
+              </span>
+            )}
           </div>
         </div>
         <div className="text-right shrink-0">
@@ -316,6 +329,8 @@ function CampaignDetail({ campaign, onClose }) {
     spendCurrency: campaign?.spendCurrency || 'USD',
     leadsAttributed: campaign?.leadsAttributed || 0,
     notes: campaign?.notes || '',
+    paymentStatus: campaign?.paymentStatus || 'paid',  // 'paid' | 'pending'
+    workspace: campaign?.workspace || 'avs',
   }));
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
@@ -449,6 +464,34 @@ function CampaignDetail({ campaign, onClose }) {
                   className="form-input"
                   placeholder="Auto-counted from Source field; override if needed"
                 />
+              </Field>
+            </Section>
+
+            <Section title="Payment status">
+              <Field>
+                <div className="grid grid-cols-2 gap-2 p-2">
+                  <button type="button"
+                    onClick={() => set('paymentStatus', 'paid')}
+                    className="py-2 rounded-xl text-xs font-medium border"
+                    style={form.paymentStatus === 'paid'
+                      ? { backgroundColor: '#3d8b5f', color: '#fff', borderColor: '#3d8b5f' }
+                      : { borderColor: 'var(--border)', color: 'var(--text-muted, #7a8a8c)' }}>
+                    Paid
+                  </button>
+                  <button type="button"
+                    onClick={() => set('paymentStatus', 'pending')}
+                    className="py-2 rounded-xl text-xs font-medium border"
+                    style={form.paymentStatus === 'pending'
+                      ? { backgroundColor: '#d4a942', color: '#fff', borderColor: '#d4a942' }
+                      : { borderColor: 'var(--border)', color: 'var(--text-muted, #7a8a8c)' }}>
+                    Owed (debt)
+                  </button>
+                </div>
+                <div className="px-3 pb-2 text-[10px] text-muted">
+                  {form.paymentStatus === 'pending'
+                    ? 'Shows as a debt until paid. Doesn\'t hit P&L until you mark paid.'
+                    : 'Counts as a normal ad expense in P&L.'}
+                </div>
               </Field>
             </Section>
 
