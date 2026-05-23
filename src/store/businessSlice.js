@@ -1082,15 +1082,19 @@ export const businessSlice = (set, get) => ({
     const cfg = get().getRechargeConfig();
     const rate = Number(cfg.commissionRate) || RECHARGE_COMMISSION_RATE;
     const benefit = Number(order.profit) || 0;
-    if (benefit <= 0) return null;  // no commission on loss orders
+    if (benefit <= 0) return null;
+    const orderIdStr = order.id != null ? String(order.id) : null;
+    if (!orderIdStr) return null;
 
-    // Check for duplicate
-    const existing = get().business.rechargeCommissions.find((c) => c.orderId === order.id);
+    // Dedup: any commission with this orderId (string-compare to be safe)
+    const existing = get().business.rechargeCommissions.find(
+      (c) => c.orderId != null && String(c.orderId) === orderIdStr
+    );
     if (existing) return existing;
 
     const commission = {
       id: uid('rcom'),
-      orderId: order.id,
+      orderId: orderIdStr,
       date: nowISO(),
       staffName: 'Marc',
       orderBenefit: benefit,
@@ -1174,19 +1178,56 @@ export const businessSlice = (set, get) => ({
   // Useful first-time after hydrating the existing 168 historical orders.
   backfillRechargeCommissions: () => {
     const orders = get().business.rechargeOrders || [];
+    const existing = get().business.rechargeCommissions || [];
+    // Normalize orderIds to strings — sheet may return number for some, string for others.
+    // Without this, "1234" !== 1234 and duplicates get created on every hydrate.
     const existingByOrder = new Set(
-      (get().business.rechargeCommissions || []).map((c) => c.orderId)
+      existing.map((c) => c.orderId != null ? String(c.orderId) : null).filter(Boolean)
     );
-    let created = 0;
+
+    const cfg = get().getRechargeConfig();
+    const rate = Number(cfg.commissionRate) || RECHARGE_COMMISSION_RATE;
+
+    const newCommissions = [];
     orders.forEach((o) => {
-      const isTermine = String(o.status || '').toLowerCase().includes('termin');
-      if (!isTermine) return;
-      if (existingByOrder.has(o.id)) return;
-      if (!(Number(o.profit) > 0)) return;
-      get().recordRechargeCommissionForOrder(o);
-      created += 1;
+      const isTerm = String(o.status || '').toLowerCase().includes('termin');
+      if (!isTerm) return;
+      const benefit = Number(o.profit) || 0;
+      if (benefit <= 0) return;
+      const orderIdStr = o.id != null ? String(o.id) : null;
+      if (!orderIdStr) return;
+      if (existingByOrder.has(orderIdStr)) return;
+      existingByOrder.add(orderIdStr);
+      newCommissions.push({
+        id: uid('rcom'),
+        orderId: orderIdStr,           // store as string consistently
+        date: nowISO(),
+        staffName: 'Marc',
+        orderBenefit: benefit,
+        commissionRate: rate,
+        commissionAmount: Math.round(benefit * rate),
+        currency: 'HTG',
+        status: 'pending',
+        paidDate: '',
+        notes: `${o.service || 'Recharge'} · ${o.client || o.tagInfo || ''}`,
+        createdAt: nowISO(),
+        updatedAt: nowISO(),
+        _pending: true,
+      });
     });
-    return created;
+
+    if (newCommissions.length === 0) return 0;
+
+    set((s) => ({
+      business: {
+        ...s.business,
+        rechargeCommissions: [...newCommissions, ...s.business.rechargeCommissions],
+      },
+    }));
+    newCommissions.forEach((c) => {
+      enqueueAvs(set, get, 'rechargeCommission', 'create', stripMeta(c));
+    });
+    return newCommissions.length;
   },
 
   // Record a CEO payout for the current cycle.
@@ -1354,6 +1395,10 @@ export const businessSlice = (set, get) => ({
 
       // Recompute unified clients after fresh data arrives
       get().rebuildClientsUnified();
+
+      // Auto-create Marc commissions for any new Terminé recharge orders
+      // (make.com may have appended fresh rows since last hydrate). Idempotent.
+      get().backfillRechargeCommissions();
     } catch (err) {
       // Same as Personal hydrate: NEVER overwrite local data on error.
       // Just log and let user retry. Local state remains intact.
