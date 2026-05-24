@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X, Coins, Layers, Tags, Download, Palette, AlertOctagon, ChevronRight,
+  CalendarRange,
 } from 'lucide-react';
 import { useStore, selectSettingsOpen } from '../store/useStore';
 import RatesEditor from './settings/RatesEditor';
@@ -11,13 +12,15 @@ import CategoryEditor from './settings/CategoryEditor';
 import DataExport from './settings/DataExport';
 import DisplaySettings from './settings/DisplaySettings';
 import DangerZone from './settings/DangerZone';
+import WorkspaceFilterSettings from './settings/WorkspaceFilterSettings';
 
 const SECTIONS = [
-  { id: 'rates',      label: 'Currency rates',  icon: Coins,        desc: 'USD ↔ HTG ↔ HTD' },
-  { id: 'buckets',    label: 'Buckets',         icon: Layers,       desc: 'Allocation percentages' },
-  { id: 'categories', label: 'Categories',      icon: Tags,         desc: 'Income & expense categories' },
-  { id: 'display',    label: 'Display',         icon: Palette,      desc: 'Theme, currency, behavior' },
-  { id: 'export',     label: 'Export data',     icon: Download,     desc: 'Download as JSON or CSV' },
+  { id: 'rates',      label: 'Currency rates',  icon: Coins,         desc: 'USD ↔ HTG ↔ HTD' },
+  { id: 'buckets',    label: 'Buckets',         icon: Layers,        desc: 'Allocation percentages' },
+  { id: 'categories', label: 'Categories',      icon: Tags,          desc: 'Income & expense categories' },
+  { id: 'display',    label: 'Display',         icon: Palette,       desc: 'Theme, currency, behavior' },
+  { id: 'filters',    label: 'Workspace data',  icon: CalendarRange, desc: 'Date cutoff per workspace' },
+  { id: 'export',     label: 'Export data',     icon: Download,      desc: 'Download as JSON or CSV' },
   { id: 'danger',     label: 'Reset local data', icon: AlertOctagon, desc: 'Re-sync from sheet', danger: true },
 ];
 
@@ -37,6 +40,7 @@ export default function Settings() {
       case 'buckets':    return <BucketEditor />;
       case 'categories': return <CategoryEditor />;
       case 'display':    return <DisplaySettings />;
+      case 'filters':    return <WorkspaceFilterSettings />;
       case 'export':     return <DataExport />;
       case 'danger':     return <DangerZone onDone={close} />;
       default:           return null;
