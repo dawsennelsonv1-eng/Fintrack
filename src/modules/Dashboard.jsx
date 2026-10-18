@@ -20,13 +20,19 @@ import {
 } from '../store/useStore';
 import { convert, formatMoney, formatCompact } from '../lib/currency';
 import { fadeUp, ease, relativeTime } from '../lib/util';
+import { useWorkspaceFilter, applyDateFilter } from '../lib/workspaceFilter';
 import SyncBadge from '../components/SyncBadge';
 import { useTxActions } from '../components/TxActions';
 import PendingInbox from '../components/PendingInbox';
 import BucketBars from '../components/BucketBars';
 
 export default function Dashboard() {
-  const transactions = useStore(selectTransactions);
+  const allTransactions = useStore(selectTransactions);
+  const filter = useWorkspaceFilter('personal');
+  const transactions = useMemo(
+    () => applyDateFilter(allTransactions, filter, 'date'),
+    [allTransactions, filter]
+  );
   const investments  = useStore(selectInvestments);
   const recurring    = useStore(selectRecurring);
   const debt         = useStore(selectTotalDebtInBase);

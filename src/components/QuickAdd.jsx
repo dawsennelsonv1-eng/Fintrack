@@ -70,6 +70,10 @@ export default function QuickAdd() {
   const [borrowModalOpen, setBorrowModalOpen] = useState(false);
   const [pendingBorrowData, setPendingBorrowData] = useState(null);
 
+  // Income split modal (pre-toggled "yes")
+  const [incomeSplitOpen, setIncomeSplitOpen] = useState(false);
+  const [pendingIncomeData, setPendingIncomeData] = useState(null);
+
   const addTransaction    = useStore((s) => s.addTransaction);
   const updateTransaction = useStore((s) => s.updateTransaction);
   const setEditingTx      = useStore((s) => s.setEditingTx);
@@ -317,7 +321,34 @@ export default function QuickAdd() {
       return;
     }
 
+    // Regular income: ask whether to split across buckets (pre-toggled yes)
+    if (type === 'income') {
+      setPendingIncomeData(buildTxData());
+      setIncomeSplitOpen(true);
+      return;
+    }
+
     addTransaction(buildTxData());
+    close();
+  };
+
+  // ─── Income split commits ────────────────────────────────
+  const closeIncomeSplit = () => {
+    setIncomeSplitOpen(false);
+    setPendingIncomeData(null);
+  };
+
+  // Yes (default): auto-split across buckets by configured percentages.
+  const commitIncomeSplit = () => {
+    addTransaction(pendingIncomeData);
+    closeIncomeSplit();
+    close();
+  };
+
+  // No: keep the whole amount in a single bucket.
+  const commitIncomeSingle = (bucketKey) => {
+    addTransaction({ ...pendingIncomeData, buckets: { [bucketKey]: pendingIncomeData.amount } });
+    closeIncomeSplit();
     close();
   };
 
@@ -855,7 +886,101 @@ export default function QuickAdd() {
         onAllocate={commitBorrowedAllocate}
         onCancel={closeBorrowModal}
       />
+
+      {/* Income: split across buckets? (pre-toggled yes) */}
+      <IncomeSplitModal
+        open={incomeSplitOpen}
+        amount={pendingIncomeData?.amount || 0}
+        currency={pendingIncomeData?.currency || 'USD'}
+        buckets={sourceBuckets}
+        onSplit={commitIncomeSplit}
+        onSingle={commitIncomeSingle}
+        onCancel={closeIncomeSplit}
+      />
     </>
+  );
+}
+
+// ─── IncomeSplitModal ──────────────────────────────────────
+// Shown when registering income. "Split across buckets?" defaults to YES.
+function IncomeSplitModal({ open, amount, currency, buckets, onSplit, onSingle, onCancel }) {
+  const [choice, setChoice] = useState('split'); // 'split' | 'single'
+  const [bucketKey, setBucketKey] = useState('operations');
+
+  useEffect(() => {
+    if (open) { setChoice('split'); setBucketKey('operations'); }
+  }, [open]);
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[60] bg-black/50 flex items-end sm:items-center justify-center p-4"
+          onClick={onCancel}
+        >
+          <motion.div
+            initial={{ y: 40, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 40, opacity: 0 }}
+            transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md surface border rounded-2xl p-5 space-y-4"
+          >
+            <div>
+              <h3 className="font-display text-lg">Split this income?</h3>
+              <p className="text-sm text-muted mt-1">
+                Split {formatMoney(amount, currency)} across your buckets by their configured percentages?
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <button
+                type="button" onClick={() => setChoice('split')}
+                className={`w-full text-left px-4 py-3 rounded-xl border transition-colors ${
+                  choice === 'split' ? 'border-accent-income bg-accent-income/5' : 'border-[var(--border)] bg-[var(--bg)]'
+                }`}
+              >
+                <div className="text-sm font-medium">Yes, split across buckets</div>
+                <div className="text-[11px] text-muted">Auto-allocates by your bucket percentages.</div>
+              </button>
+
+              <button
+                type="button" onClick={() => setChoice('single')}
+                className={`w-full text-left px-4 py-3 rounded-xl border transition-colors ${
+                  choice === 'single' ? 'border-accent-income bg-accent-income/5' : 'border-[var(--border)] bg-[var(--bg)]'
+                }`}
+              >
+                <div className="text-sm font-medium">No, keep in one bucket</div>
+                <div className="text-[11px] text-muted">The full amount goes to a single bucket.</div>
+              </button>
+            </div>
+
+            {choice === 'single' && (
+              <div className="flex items-center gap-2 border-t border-[var(--border)] pt-3">
+                <label className="text-[10px] uppercase tracking-[0.1em] text-muted font-semibold whitespace-nowrap">Bucket</label>
+                <select value={bucketKey} onChange={(e) => setBucketKey(e.target.value)}
+                  className="flex-1 px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm focus:ring-2 focus:ring-[var(--border)]">
+                  {buckets.map((b) => (
+                    <option key={b.key} value={b.key}>{b.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <button type="button" onClick={onCancel}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-[var(--bg)] border border-[var(--border)] text-sm font-medium">
+                Cancel
+              </button>
+              <button type="button"
+                onClick={() => choice === 'split' ? onSplit() : onSingle(bucketKey)}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 text-sm font-medium">
+                {choice === 'split' ? 'Split' : 'Keep in one bucket'}
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 

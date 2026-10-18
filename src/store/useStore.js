@@ -67,6 +67,19 @@ export const DEFAULT_BUCKETS = [
   { key: 'baller',     name: 'Baller',             percentage: 5,  color: '#9b59b6', icon: 'Sparkles',   order: 5 },
 ];
 
+// Deduplicate buckets by `key` (first occurrence wins). Guards against
+// duplicate default buckets created by repeated init/sync races.
+export function dedupeBuckets(buckets) {
+  const seen = new Set();
+  const out = [];
+  for (const b of (buckets || [])) {
+    if (!b || !b.key || seen.has(b.key)) continue;
+    seen.add(b.key);
+    out.push(b);
+  }
+  return out;
+}
+
 // ════════════════════════════════════════════════════════════════════
 // DEFAULT CATEGORIES
 // ════════════════════════════════════════════════════════════════════
@@ -323,6 +336,7 @@ const personalSlice = (set, get) => ({
   personal: {
     transactions:     [],
     budgets:          [],
+    budgetItems:      [],
     debts:            [],
     debtEvents:       [],
     investments:      [],
@@ -349,16 +363,22 @@ const personalSlice = (set, get) => ({
     lastDeleted: null,
   },
 
-  // Round E: ensure default buckets exist; ALSO migrate-kill any "holding" bucket
+  // Round E: ensure default buckets exist; ALSO migrate-kill any "holding" bucket.
+  // Idempotent by `key`: dedupes any duplicates and only adds missing defaults.
   initializeBuckets: () => {
-    const existing = get().personal.buckets;
-    if (existing.length === 0) {
-      const newBuckets = DEFAULT_BUCKETS.map((b) => ({
+    const existing = dedupeBuckets(get().personal.buckets);
+    if (existing.length !== get().personal.buckets.length) {
+      set((s) => ({ personal: { ...s.personal, buckets: existing } }));
+    }
+    // Add any missing default buckets (never duplicates an existing key)
+    const existingKeys = new Set(existing.map((b) => b.key));
+    const missing = DEFAULT_BUCKETS.filter((b) => !existingKeys.has(b.key));
+    if (missing.length > 0) {
+      const newBuckets = missing.map((b) => ({
         ...b, id: uid('bkt'), enabled: true, createdAt: nowISO(), updatedAt: nowISO(),
       }));
-      set((s) => ({ personal: { ...s.personal, buckets: newBuckets } }));
+      set((s) => ({ personal: { ...s.personal, buckets: [...existing, ...newBuckets] } }));
       newBuckets.forEach((b) => enqueue(set, get, 'bucket', 'create', b));
-      return;
     }
     // Kill any Holding bucket left from Round D
     const holding = existing.find((b) => b.key === 'holding');
@@ -1099,6 +1119,59 @@ const personalSlice = (set, get) => ({
     enqueue(set, get, 'budget', 'delete', { id });
   },
 
+  // ─── Budget items (expected income/expenses per bucket) ──
+  // These are FORWARD-LOOKING: they show as blue (income) / yellow
+  // (expense) dots in the calendar until the date arrives and the user
+  // confirms them, at which point a real transaction is created.
+  addBudgetItem: ({ bucketKey, type = 'expense', name, amount, currency = 'USD', frequency = 'weekly', dayOfWeek = 0, dayOfMonth = 1, startDate }) => {
+    const item = {
+      id: uid('bdi'), bucketKey, type,
+      name: name || (type === 'income' ? 'Expected income' : 'Expected expense'),
+      amount: Number(amount), currency,
+      frequency, dayOfWeek: Number(dayOfWeek) || 0, dayOfMonth: Number(dayOfMonth) || 1,
+      startDate: startDate || nowISO(),
+      status: 'expected',
+      createdAt: nowISO(), updatedAt: nowISO(),
+    };
+    set((s) => ({ personal: { ...s.personal, budgetItems: [...s.personal.budgetItems, item] } }));
+    enqueue(set, get, 'budgetItem', 'create', item);
+    return item;
+  },
+
+  removeBudgetItem: (id) => {
+    set((s) => ({ personal: { ...s.personal, budgetItems: s.personal.budgetItems.filter((b) => b.id !== id) } }));
+    enqueue(set, get, 'budgetItem', 'delete', { id });
+  },
+
+  // Confirm an expected item on a specific date → creates a real
+  // transaction (green/red) and marks the item confirmed.
+  confirmBudgetItem: (id, { date } = {}) => {
+    const item = get().personal.budgetItems.find((b) => b.id === id);
+    if (!item) return null;
+    const effectiveDate = date || nowISO();
+    const tx = get().addTransaction({
+      type: item.type,
+      amount: item.amount,
+      currency: item.currency,
+      category: item.type === 'income' ? 'Expected income' : 'Expected expense',
+      notes: item.name,
+      date: effectiveDate,
+      buckets: item.type === 'income'
+        ? autoSplitIncome(item.amount, get().personal.buckets)
+        : { [item.bucketKey]: -Math.abs(item.amount) },
+    });
+    set((s) => ({
+      personal: {
+        ...s.personal,
+        budgetItems: s.personal.budgetItems.map((b) =>
+          b.id === id ? { ...b, status: 'confirmed', confirmedAt: effectiveDate, linkedTxId: tx?.id || '', updatedAt: nowISO() } : b
+        ),
+      },
+    }));
+    enqueue(set, get, 'budgetItem', 'update', { id, status: 'confirmed', confirmedAt: effectiveDate });
+    return tx;
+  },
+
   // ─── Debts ────────────────────────────────────────────────
   addDebt: ({ creditor, principal, currency = 'USD', dueDate, notes = '', direction = 'owe', interestRate = 0, interestType = 'simple', linkedTxId = '' }) => {
     const d = {
@@ -1566,13 +1639,14 @@ const personalSlice = (set, get) => ({
           ...s.personal,
           transactions: mergedTransactions,
           budgets:          (data.budgets && data.budgets.length)          ? data.budgets          : s.personal.budgets,
+          budgetItems:      (data.budgetItems && data.budgetItems.length)  ? data.budgetItems      : s.personal.budgetItems,
           debts:            debts.length                                    ? debts                 : s.personal.debts,
           debtEvents:       (data.debtEvents && data.debtEvents.length)    ? data.debtEvents       : s.personal.debtEvents,
           investments:      (data.investments && data.investments.length)  ? data.investments      : s.personal.investments,
           investmentEvents: (data.investmentEvents && data.investmentEvents.length) ? data.investmentEvents : s.personal.investmentEvents,
           ventures:         ventures.length                                 ? ventures              : s.personal.ventures,
           ventureEvents:    (data.ventureEvents && data.ventureEvents.length) ? data.ventureEvents : s.personal.ventureEvents,
-          buckets:          (data.buckets && data.buckets.length)          ? data.buckets          : s.personal.buckets,
+          buckets:          (data.buckets && data.buckets.length)          ? dedupeBuckets(data.buckets)          : s.personal.buckets,
           goals:            (data.goals && data.goals.length)              ? data.goals            : s.personal.goals,
           recurring:        (data.recurring && data.recurring.length)      ? data.recurring        : s.personal.recurring,
           pending:          (data.pending && data.pending.length)          ? data.pending          : s.personal.pending,
@@ -1775,6 +1849,7 @@ export const useStore = create()(
           ...p.personal,
           transactions:     p.personal.transactions     || [],
           budgets:          p.personal.budgets          || [],
+          budgetItems:      p.personal.budgetItems      || [],
           debts:            p.personal.debts            || [],
           debtEvents:       p.personal.debtEvents       || [],
           investments:      p.personal.investments      || [],
@@ -1794,9 +1869,9 @@ export const useStore = create()(
           queue:            p.personal.queue            || [],
           syncLog:          p.personal.syncLog          || [],
         };
-        // Round E: KILL Holding bucket from existing stores
+        // Round E: KILL Holding bucket from existing stores + dedup by key
         if (Array.isArray(p.personal.buckets)) {
-          p.personal.buckets = p.personal.buckets.filter((b) => b.key !== 'holding');
+          p.personal.buckets = dedupeBuckets(p.personal.buckets).filter((b) => b.key !== 'holding');
         }
         // Round E: rewrite any transaction allocations that referenced 'holding' → 'operations'
         if (Array.isArray(p.personal.transactions)) {
@@ -1927,6 +2002,48 @@ export function computeTotalLiquid(transactions, base, rates) {
     if (v > 0) total += v;
   }
   return total;
+}
+
+// Expected (budgeted) income/expenses → per-date map for the calendar.
+// Returns { 'YYYY-MM-DD': { income, expense, items: [id] } } for dates in
+// [fromDate, toDate]. Only 'expected' (unconfirmed) items are included.
+export function computeExpectedOccurrences(budgetItems, fromDate, toDate) {
+  const from = new Date(fromDate); from.setHours(0, 0, 0, 0);
+  const to = new Date(toDate); to.setHours(23, 59, 59, 999);
+  const map = {};
+  const key = (d) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+  for (const item of (budgetItems || [])) {
+    if (item.status !== 'expected') continue;
+    const start = new Date(item.startDate);
+    if (isNaN(start)) continue;
+    const cursor = new Date(start);
+    let guard = 0;
+    while (cursor <= to && guard < 400) {
+      if (cursor >= from) {
+        const k = key(cursor);
+        if (!map[k]) map[k] = { income: 0, expense: 0, items: [] };
+        if (item.type === 'income') map[k].income += Number(item.amount) || 0;
+        else map[k].expense += Number(item.amount) || 0;
+        map[k].items.push(item.id);
+      }
+      if (item.frequency === 'daily') {
+        cursor.setDate(cursor.getDate() + 1);
+      } else if (item.frequency === 'weekly') {
+        cursor.setDate(cursor.getDate() + 7);
+      } else { // monthly
+        cursor.setMonth(cursor.getMonth() + 1);
+        const lastDay = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0).getDate();
+        cursor.setDate(Math.min(Number(item.dayOfMonth) || 1, lastDay));
+      }
+      guard++;
+    }
+  }
+  return map;
 }
 
 // Round E: borrowed-pool balance = sum of outstanding 'owe' debt principals
@@ -2120,6 +2237,7 @@ export function searchTransactions(transactions, { query = '', type = null, cate
 // ════════════════════════════════════════════════════════════════════
 export const selectTransactions     = (s) => s.personal.transactions;
 export const selectBudgets          = (s) => s.personal.budgets;
+export const selectBudgetItems      = (s) => s.personal.budgetItems;
 export const selectDebts            = (s) => s.personal.debts;
 export const selectDebtEvents       = (s) => s.personal.debtEvents;
 export const selectInvestments      = (s) => s.personal.investments;

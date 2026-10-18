@@ -11,9 +11,11 @@ import {
 import {
   useStore,
   selectTransactions, selectBuckets, selectBaseCurrency, selectRates,
+  selectBudgetItems, computeExpectedOccurrences,
 } from '../store/useStore';
 import { convert, formatMoney, formatCompact } from '../lib/currency';
 import { fadeUp, ease, isSameDay } from '../lib/util';
+import { useWorkspaceFilter, applyDateFilter } from '../lib/workspaceFilter';
 import { useTxActions } from '../components/TxActions';
 
 // Round D: Calendar tab has a top toggle — Month view (original calendar
@@ -85,7 +87,14 @@ export default function CalendarView() {
 // MONTH VIEW — the original calendar grid
 // ════════════════════════════════════════════════════════════════════
 function MonthView() {
-  const transactions = useStore(selectTransactions);
+  const allTransactions = useStore(selectTransactions);
+  const filter = useWorkspaceFilter('personal');
+  const transactions = useMemo(
+    () => applyDateFilter(allTransactions, filter, 'date'),
+    [allTransactions, filter]
+  );
+  const budgetItems  = useStore(selectBudgetItems);
+  const confirmBudgetItem = useStore((s) => s.confirmBudgetItem);
   const baseCurrency = useStore(selectBaseCurrency);
   const rates        = useStore(selectRates);
 
@@ -120,6 +129,21 @@ function MonthView() {
     return map;
   }, [transactions, cursor, baseCurrency, rates]);
 
+  // Expected (budgeted) items → day-of-month map for the current month.
+  const expectedMap = useMemo(() => {
+    const year = cursor.getFullYear();
+    const month = cursor.getMonth();
+    const from = new Date(year, month, 1);
+    const to = new Date(year, month + 1, 0);
+    const occ = computeExpectedOccurrences(budgetItems, from, to);
+    const map = {};
+    for (const [k, v] of Object.entries(occ)) {
+      const d = new Date(`${k}T00:00:00`);
+      if (d.getFullYear() === year && d.getMonth() === month) map[d.getDate()] = v;
+    }
+    return map;
+  }, [budgetItems, cursor]);
+
   const monthTotals = useMemo(() => {
     return Object.values(dayMap).reduce(
       (acc, d) => ({ income: acc.income + d.income, expense: acc.expense + d.expense }),
@@ -132,6 +156,17 @@ function MonthView() {
       .filter((t) => isSameDay(new Date(t.date), selected))
       .sort((a, b) => new Date(b.date) - new Date(a.date));
   }, [transactions, selected]);
+
+  // Expected (budgeted) items for the selected day.
+  const selectedExpected = useMemo(() => {
+    const exp = expectedMap[selected.getDate()];
+    if (!exp) return [];
+    return exp.items
+      .map((id) => budgetItems.find((b) => b.id === id))
+      .filter(Boolean);
+  }, [expectedMap, selected, budgetItems]);
+
+  const canConfirm = selected <= new Date();
 
   const monthLabel = cursor.toLocaleDateString('en', { month: 'long', year: 'numeric' });
   const navMonth = (delta) => {
@@ -186,10 +221,13 @@ function MonthView() {
           {days.map((d, i) => {
             if (!d) return <div key={i} />;
             const data = dayMap[d.getDate()];
+            const expected = expectedMap[d.getDate()];
             const isToday = isSameDay(d, new Date());
             const isSelected = isSameDay(d, selected);
             const hasIncome  = data?.income  > 0;
             const hasExpense = data?.expense > 0;
+            const hasExpectedIncome  = expected?.income  > 0;
+            const hasExpectedExpense = expected?.expense > 0;
 
             return (
               <motion.button
@@ -209,10 +247,12 @@ function MonthView() {
                   </div>
                 )}
                 <span className="relative text-sm font-medium num">{d.getDate()}</span>
-                {(hasIncome || hasExpense) && (
+                {(hasIncome || hasExpense || hasExpectedIncome || hasExpectedExpense) && (
                   <div className="relative flex gap-0.5 mt-0.5">
                     {hasIncome  && <span className="w-1 h-1 rounded-full bg-accent-income" />}
                     {hasExpense && <span className="w-1 h-1 rounded-full bg-accent-expense" />}
+                    {hasExpectedIncome  && <span className="w-1 h-1 rounded-full bg-blue-500" />}
+                    {hasExpectedExpense && <span className="w-1 h-1 rounded-full bg-amber-400" />}
                   </div>
                 )}
               </motion.button>
@@ -233,6 +273,44 @@ function MonthView() {
           </div>
           <span className="text-[11px] text-muted">{selectedTxs.length} entries</span>
         </div>
+
+        {/* Expected (budgeted) items — blue income / yellow expense */}
+        {selectedExpected.length > 0 && (
+          <div className="mb-3 space-y-2">
+            <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold px-1">
+              Expected · confirm when paid
+            </div>
+            {selectedExpected.map((item) => {
+              const isIncome = item.type === 'income';
+              return (
+                <div key={item.id}
+                  className="flex items-center gap-3 px-4 py-3 rounded-xl border border-dashed border-[var(--border)] bg-[var(--bg)]">
+                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                    isIncome ? 'bg-blue-500/10 text-blue-500' : 'bg-amber-400/10 text-amber-500'
+                  }`}>
+                    {isIncome ? <ArrowDownLeft size={16} /> : <ArrowUpRight size={16} />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">{item.name}</div>
+                    <div className="text-[11px] text-muted truncate">
+                      {item.frequency} · {item.bucketKey}
+                    </div>
+                  </div>
+                  <div className={`font-medium num text-sm ${isIncome ? 'text-blue-500' : 'text-amber-500'}`}>
+                    {isIncome ? '+' : '−'}{formatMoney(item.amount, item.currency)}
+                  </div>
+                  {canConfirm && (
+                    <button
+                      onClick={() => confirmBudgetItem(item.id, { date: selected.toISOString() })}
+                      className="px-3 py-1.5 rounded-lg bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 text-xs font-medium shrink-0">
+                      Confirm
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         <AnimatePresence mode="wait">
           {selectedTxs.length === 0 ? (
@@ -432,7 +510,12 @@ function buildSeries(transactions, periodA, periodB, base, rates) {
 }
 
 function CompareView() {
-  const transactions = useStore(selectTransactions);
+  const allTransactions = useStore(selectTransactions);
+  const filter = useWorkspaceFilter('personal');
+  const transactions = useMemo(
+    () => applyDateFilter(allTransactions, filter, 'date'),
+    [allTransactions, filter]
+  );
   const buckets      = useStore(selectBuckets);
   const baseCurrency = useStore(selectBaseCurrency);
   const rates        = useStore(selectRates);

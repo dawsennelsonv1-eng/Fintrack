@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import {
   useStore,
-  selectBuckets, selectGoals, selectTransactions,
+  selectBuckets, selectGoals, selectTransactions, selectBudgetItems,
   selectBaseCurrency, selectRates,
   computeBucketBalances, computeBucketMTD, computeGoalsForBucket,
 } from '../store/useStore';
@@ -124,7 +124,139 @@ export default function BudgetsModule() {
         balance={activeBucket ? (balances[activeBucket.key] || 0) : 0}
         onClose={() => setActiveBucket(null)}
       />
+
+      <BudgetsSection buckets={sortedBuckets} />
     </main>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// BUDGETS SECTION — expected income/expenses per bucket
+// ════════════════════════════════════════════════════════════════════
+function BudgetsSection({ buckets }) {
+  const budgetItems = useStore(selectBudgetItems);
+  const addBudgetItem = useStore((s) => s.addBudgetItem);
+  const removeBudgetItem = useStore((s) => s.removeBudgetItem);
+
+  const [adding, setAdding] = useState(false);
+  const [bucketKey, setBucketKey] = useState(buckets[0]?.key || 'operations');
+  const [type, setType] = useState('expense');
+  const [name, setName] = useState('');
+  const [amount, setAmount] = useState('');
+  const [currency, setCurrency] = useState('USD');
+  const [frequency, setFrequency] = useState('weekly');
+
+  const activeItems = budgetItems.filter((b) => b.status === 'expected');
+
+  const submit = (e) => {
+    e.preventDefault();
+    const v = parseFloat(amount);
+    if (!v || v <= 0) return;
+    addBudgetItem({ bucketKey, type, name: name.trim(), amount: v, currency, frequency });
+    setName(''); setAmount(''); setAdding(false);
+  };
+
+  return (
+    <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.2 }} className="mt-8">
+      <div className="flex items-baseline justify-between mb-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">Budgets</div>
+          <h2 className="font-display text-2xl">Expected income & expenses</h2>
+        </div>
+        <button onClick={() => setAdding((v) => !v)}
+          className="flex items-center gap-1.5 text-xs text-muted hover:text-[var(--text)] transition-colors">
+          <Plus size={13} /> Add
+        </button>
+      </div>
+
+      <p className="text-[11px] text-muted mb-3">
+        These show as blue (income) / yellow (expense) dots in your calendar. They only count once the date arrives and you confirm them.
+      </p>
+
+      {adding && (
+        <form onSubmit={submit} className="surface border rounded-2xl p-4 mb-3 space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-[10px] uppercase tracking-[0.1em] text-muted font-semibold">Type</label>
+              <select value={type} onChange={(e) => setType(e.target.value)}
+                className="w-full mt-1 px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm">
+                <option value="expense">Expected expense</option>
+                <option value="income">Expected income</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] uppercase tracking-[0.1em] text-muted font-semibold">Bucket</label>
+              <select value={bucketKey} onChange={(e) => setBucketKey(e.target.value)}
+                className="w-full mt-1 px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm">
+                {buckets.map((b) => <option key={b.key} value={b.key}>{b.name}</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="text-[10px] uppercase tracking-[0.1em] text-muted font-semibold">Name</label>
+            <input value={name} onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Rent, Salary, Groceries"
+              className="w-full mt-1 px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm" />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-[10px] uppercase tracking-[0.1em] text-muted font-semibold">Amount</label>
+              <input type="number" step="0.01" min="0" value={amount} onChange={(e) => setAmount(e.target.value)}
+                placeholder="0.00"
+                className="w-full mt-1 px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm num" />
+            </div>
+            <div>
+              <label className="text-[10px] uppercase tracking-[0.1em] text-muted font-semibold">Frequency</label>
+              <select value={frequency} onChange={(e) => setFrequency(e.target.value)}
+                className="w-full mt-1 px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm">
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+            </div>
+          </div>
+          <button type="submit" disabled={!amount || parseFloat(amount) <= 0}
+            className="w-full py-2.5 rounded-xl bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 text-sm font-medium disabled:opacity-40">
+            Add expected {type === 'income' ? 'income' : 'expense'}
+          </button>
+        </form>
+      )}
+
+      {activeItems.length === 0 ? (
+        <div className="surface border rounded-2xl p-6 text-center text-sm text-muted">
+          No expected items yet. Add one to see it in your calendar.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {activeItems.map((item) => {
+            const bucket = buckets.find((b) => b.key === item.bucketKey);
+            const isIncome = item.type === 'income';
+            return (
+              <div key={item.id} className="surface border rounded-xl px-4 py-3 flex items-center gap-3">
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                  isIncome ? 'bg-blue-500/10 text-blue-500' : 'bg-amber-400/10 text-amber-500'
+                }`}>
+                  {isIncome ? <ArrowRight size={14} className="rotate-[-90deg]" /> : <ArrowRight size={14} className="rotate-90" />}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium truncate">{item.name}</div>
+                  <div className="text-[11px] text-muted truncate">
+                    {bucket?.name || item.bucketKey} · {item.frequency}
+                  </div>
+                </div>
+                <div className={`font-medium num text-sm ${isIncome ? 'text-blue-500' : 'text-amber-500'}`}>
+                  {isIncome ? '+' : '−'}{formatMoney(item.amount, item.currency)}
+                </div>
+                <button onClick={() => removeBudgetItem(item.id)}
+                  className="w-7 h-7 rounded-lg hover:bg-accent-expense/10 text-muted hover:text-accent-expense flex items-center justify-center shrink-0">
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </motion.section>
   );
 }
 

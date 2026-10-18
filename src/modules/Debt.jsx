@@ -1,5 +1,5 @@
 // src/modules/Debt.jsx — Round E
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Trash2, Info, ArrowDownLeft, ArrowUpRight, Percent, TrendingUp, TrendingDown,
@@ -181,6 +181,7 @@ export default function DebtModule() {
 
 function DebtRow({ debt, idx, baseCurrency, rates, borrowedDeployments, investments, ventures, ventureEvents, ventureDistributions, onDelete }) {
   const recordRepayment = useStore((s) => s.recordRepayment);
+  const recordBorrowedDeployment = useStore((s) => s.recordBorrowedDeployment);
   const buckets = useStore((s) => s.personal.buckets);
   const [paying, setPaying] = useState(false);
   const [amount, setAmount] = useState('');
@@ -189,6 +190,28 @@ function DebtRow({ debt, idx, baseCurrency, rates, borrowedDeployments, investme
   const [payBucket, setPayBucket] = useState('operations');
   const [showHistory, setShowHistory] = useState(false);
   const [showTrail, setShowTrail] = useState(false);
+  const [markUsedOpen, setMarkUsedOpen] = useState(false);
+  const pressTimer = useRef(null);
+
+  const startPress = () => {
+    pressTimer.current = setTimeout(() => {
+      if (navigator.vibrate) navigator.vibrate(15);
+      setMarkUsedOpen(true);
+    }, 450);
+  };
+  const cancelPress = () => { if (pressTimer.current) clearTimeout(pressTimer.current); };
+
+  const markUsed = () => {
+    recordBorrowedDeployment({
+      sourceDebtId: debt.id,
+      destinationType: 'spent',
+      destinationLabel: 'Spent (consumed)',
+      amount: Number(debt.principal) || 0,
+      currency: debt.currency,
+      note: 'Marked as already used',
+    });
+    setMarkUsedOpen(false);
+  };
 
   const { remaining, remainingBase, repaid, events = [], direction, interestRate, accruedInterest, projectedPayback } = debt;
   const pct = debt.principal > 0 ? repaid / debt.principal : 0;
@@ -236,6 +259,14 @@ function DebtRow({ debt, idx, baseCurrency, rates, borrowedDeployments, investme
       initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8, scale: 0.98 }}
       transition={{ delay: idx * 0.04, duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
       className={`surface border rounded-2xl p-4 ${isPaid ? 'opacity-60' : ''}`}
+      onTouchStart={startPress}
+      onTouchEnd={cancelPress}
+      onTouchMove={cancelPress}
+      onTouchCancel={cancelPress}
+      onMouseDown={startPress}
+      onMouseUp={cancelPress}
+      onMouseLeave={cancelPress}
+      onContextMenu={(e) => { e.preventDefault(); cancelPress(); setMarkUsedOpen(true); }}
     >
       <div className="flex items-start justify-between gap-3 mb-2">
         <div className="flex-1 min-w-0">
@@ -453,6 +484,41 @@ function DebtRow({ debt, idx, baseCurrency, rates, borrowedDeployments, investme
           Show history
         </button>
       )}
+
+      {/* Long-press: mark borrowed money as already used */}
+      <AnimatePresence>
+        {markUsedOpen && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[60] bg-black/50 flex items-end sm:items-center justify-center p-4"
+            onClick={() => setMarkUsedOpen(false)}
+          >
+            <motion.div
+              initial={{ y: 40, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 40, opacity: 0 }}
+              transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md surface border rounded-2xl p-5 space-y-4"
+            >
+              <div>
+                <h3 className="font-display text-lg">Mark as already used?</h3>
+                <p className="text-sm text-muted mt-1">
+                  This removes {formatMoney(debt.principal, debt.currency)} from your borrowed capital — it was already spent. The debt itself stays in your liabilities.
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setMarkUsedOpen(false)}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-[var(--bg)] border border-[var(--border)] text-sm font-medium">
+                  Cancel
+                </button>
+                <button type="button" onClick={markUsed}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 text-sm font-medium">
+                  Mark used
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }

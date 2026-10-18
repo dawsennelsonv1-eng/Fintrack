@@ -15,6 +15,7 @@ import { Calendar, X, AlertTriangle } from 'lucide-react';
 import { useStore } from '../../store/useStore';
 
 const WORKSPACES = [
+  { id: 'personal',  label: 'Personal Finance', accent: '#3d8b5f' },
   { id: 'avs',      label: 'AVS Solution HT', accent: '#2D5F4F' },
   { id: 'recharge', label: 'AVS Recharge',    accent: '#2D4F7C' },
 ];
