@@ -13,7 +13,7 @@
 import { useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { ArrowRight, Briefcase, Wallet, TrendingUp, TrendingDown } from 'lucide-react';
-import { useStore, selectBaseCurrency, selectRates } from '../store/useStore';
+import { useStore, selectBaseCurrency, selectRates, selectNetWorth } from '../store/useStore';
 import { convert, formatMoney } from '../lib/currency';
 import { getWorkspace } from '../workspaces/registry';
 
@@ -40,58 +40,8 @@ function endOfMonth() {
   return x;
 }
 
-// ─── Net worth math (Personal) ─────────────────────────────
-function computePersonalNetWorth(state, base, rates) {
-  const p = state.personal || {};
-
-  // Cash from bucket allocations across all transactions
-  let cashBase = 0;
-  (p.transactions || []).forEach((t) => {
-    const allocs = t.buckets || {};
-    Object.values(allocs).forEach((v) => {
-      const n = Number(v) || 0;
-      if (n !== 0) {
-        cashBase += convert(n, t.currency || 'USD', base, rates);
-      }
-    });
-  });
-
-  // Investments
-  let investmentsBase = 0;
-  (p.investments || []).forEach((inv) => {
-    const value = (Number(inv.units) || 0) * (Number(inv.currentPrice) || 0);
-    investmentsBase += convert(value, inv.currency || 'USD', base, rates);
-  });
-
-  // Ventures
-  let venturesBase = 0;
-  (p.ventures || []).forEach((v) => {
-    venturesBase += convert(
-      Number(v.currentValuation) || 0,
-      v.valuationCurrency || 'USD',
-      base, rates
-    );
-  });
-
-  // Debts (owe = negative, receivable = positive offset already in cash)
-  let debtsBase = 0;
-  (p.debts || []).forEach((d) => {
-    if (d.status === 'paid') return;
-    const repaid = (p.debtEvents || [])
-      .filter((e) => e.debtId === d.id && e.type === 'repayment')
-      .reduce((s, e) => s + (Number(e.amount) || 0), 0);
-    const remaining = (Number(d.principal) || 0) - repaid;
-    if (remaining <= 0) return;
-    const direction = d.direction || 'owe';
-    if (direction === 'owe') {
-      debtsBase -= convert(remaining, d.currency || 'USD', base, rates);
-    } else {
-      debtsBase += convert(remaining, d.currency || 'USD', base, rates);
-    }
-  });
-
-  return cashBase + investmentsBase + venturesBase + debtsBase;
-}
+// Personal net worth comes from the single authoritative selector in the
+// store (Total Assets − Total Liabilities) — no duplicate math here.
 
 // ─── AVS MTD profit ────────────────────────────────────────
 function computeAvsMtdProfit(state) {
@@ -167,8 +117,8 @@ export default function CombinedWealthStrip() {
   const baseCurrency = useStore(selectBaseCurrency);
   const rates = useStore(selectRates);
 
-  // Compute both metrics — pull the whole state for the calc
-  const personalNetWorth = useStore((s) => computePersonalNetWorth(s, baseCurrency, rates));
+  // Compute both metrics — net worth from the authoritative store selector
+  const personalNetWorth = useStore(selectNetWorth);
   const avsMtdProfit = useStore((s) => computeAvsMtdProfit(s));
 
   // Hide entirely if both are zero

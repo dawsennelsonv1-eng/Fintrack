@@ -11,10 +11,12 @@ import {
 } from 'lucide-react';
 import {
   useStore,
-  selectTransactions, selectInvestments,
+  selectTransactions, selectInvestments, selectRecurring,
   selectTotalDebtInBase, selectBaseCurrency, selectRates,
-  selectBorrowedPool, selectNetWorth,
-  computeMonthSummary, computeInvestmentTotals, computeTotalLiquid,
+  selectBorrowedPool, selectNetWorth, selectTotalAssets,
+  selectTotalLiabilities, selectTotalLiquidAssets,
+  computeMonthSummary, computeMonthCashFlow, computeRecurringRevenueMonthly,
+  computeInvestmentTotals, computeTotalLiquid, computeNetCash,
 } from '../store/useStore';
 import { convert, formatMoney, formatCompact } from '../lib/currency';
 import { fadeUp, ease, relativeTime } from '../lib/util';
@@ -26,14 +28,24 @@ import BucketBars from '../components/BucketBars';
 export default function Dashboard() {
   const transactions = useStore(selectTransactions);
   const investments  = useStore(selectInvestments);
+  const recurring    = useStore(selectRecurring);
   const debt         = useStore(selectTotalDebtInBase);
   const borrowedPool = useStore(selectBorrowedPool);
   const netWorth     = useStore(selectNetWorth);
+  const totalAssets  = useStore(selectTotalAssets);
+  const totalLiabilities = useStore(selectTotalLiabilities);
+  const totalLiquidAssets = useStore(selectTotalLiquidAssets);
   const baseCurrency = useStore(selectBaseCurrency);
   const rates        = useStore(selectRates);
   const setActiveTab = useStore((s) => s.setActiveTab);
 
   const summary   = useMemo(() => computeMonthSummary(transactions, baseCurrency, rates), [transactions, baseCurrency, rates]);
+  const cashFlow  = useMemo(() => computeMonthCashFlow(transactions, baseCurrency, rates), [transactions, baseCurrency, rates]);
+  const recurringRevenue = useMemo(() => computeRecurringRevenueMonthly(recurring, baseCurrency, rates), [recurring, baseCurrency, rates]);
+  const bucketAllocations = useMemo(
+    () => computeNetCash(transactions, baseCurrency, rates),
+    [transactions, baseCurrency, rates]
+  );
   const invTotals = useMemo(() => computeInvestmentTotals(investments, baseCurrency, rates), [investments, baseCurrency, rates]);
   const totalLiquid = useMemo(
     () => computeTotalLiquid(transactions, baseCurrency, rates),
@@ -106,19 +118,41 @@ export default function Dashboard() {
 
       {/* Net Worth — secondary */}
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.06 }} className="mb-5">
-        <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1.5">Net Worth</div>
+        <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1.5">Actual Net Worth</div>
         <div className="flex items-baseline gap-2">
           <span className={`font-display text-4xl num leading-none ${netWorth < 0 ? 'text-accent-expense' : ''}`}>
             {formatMoney(netWorth, baseCurrency)}
           </span>
         </div>
-        <div className="mt-1.5 text-[11px] text-muted">Cash + Investments + Ventures + Receivables − Debts</div>
+        <div className="mt-1.5 text-[11px] text-muted mb-3">Total Assets − Total Liabilities</div>
+        <div className="grid grid-cols-3 gap-2 text-center">
+          <div className="surface border rounded-xl px-2 py-2.5">
+            <div className="text-[9px] uppercase tracking-[0.12em] text-muted font-semibold">Liquid Assets</div>
+            <div className="font-display text-sm num mt-0.5">{formatCompact(totalLiquidAssets, baseCurrency)}</div>
+          </div>
+          <div className="surface border rounded-xl px-2 py-2.5">
+            <div className="text-[9px] uppercase tracking-[0.12em] text-muted font-semibold">Total Assets</div>
+            <div className="font-display text-sm num mt-0.5">{formatCompact(totalAssets, baseCurrency)}</div>
+          </div>
+          <div className="surface border rounded-xl px-2 py-2.5">
+            <div className="text-[9px] uppercase tracking-[0.12em] text-muted font-semibold">Liabilities</div>
+            <div className={`font-display text-sm num mt-0.5 ${totalLiabilities > 0 ? 'text-accent-expense' : ''}`}>
+              {formatCompact(totalLiabilities, baseCurrency)}
+            </div>
+          </div>
+        </div>
       </motion.section>
 
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.08 }}
         className="grid grid-cols-2 gap-3 mb-5">
-        <StatCard label="Income · MTD"   value={summary.income}     tone="income"  icon={ArrowDownLeft} currency={baseCurrency} />
-        <StatCard label="Expenses · MTD" value={summary.expense}    tone="expense" icon={ArrowUpRight}  currency={baseCurrency} />
+        <StatCard label="Net Profit · MTD" value={summary.net} tone={summary.net >= 0 ? 'income' : 'expense'} icon={TrendingUp} currency={baseCurrency}
+                  subtle={`Earned income ${formatCompact(summary.income, baseCurrency)} · Expenses ${formatCompact(summary.expense, baseCurrency)}`} />
+        <StatCard label="Net Cash Flow · MTD" value={cashFlow.net} tone={cashFlow.net >= 0 ? 'income' : 'expense'} icon={ArrowDownLeft} currency={baseCurrency}
+                  subtle="All money movement (incl. borrowed & repayments)" />
+        <StatCard label="Recurring Revenue" value={recurringRevenue} tone="default" icon={PieIcon} currency={baseCurrency}
+                  subtle="Monthlyized · business metric, not net worth" />
+        <StatCard label="In Buckets" value={bucketAllocations} tone="default" icon={Wallet} currency={baseCurrency}
+                  subtle="Net allocated balances" />
         <StatCard label="Investments"    value={invTotals.value}    tone="default" icon={TrendingUp}    currency={baseCurrency}
                   subtle={invTotals.gain >= 0
                     ? `+${formatCompact(invTotals.gain, baseCurrency)} (${(invTotals.gainPct*100).toFixed(1)}%)`

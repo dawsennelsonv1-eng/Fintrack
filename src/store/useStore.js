@@ -1131,7 +1131,7 @@ const personalSlice = (set, get) => ({
     if (updated) enqueue(set, get, 'debt', 'update', updated);
   },
 
-  recordRepayment: (debtId, amount, { interestPaid = 0 } = {}) => {
+  recordRepayment: (debtId, amount, { interestPaid = 0, date, sourceBucketKey = 'operations' } = {}) => {
     const debt = get().personal.debts.find((d) => d.id === debtId);
     if (!debt) return null;
     const direction = debt.direction || 'owe';
@@ -1143,11 +1143,17 @@ const personalSlice = (set, get) => ({
     const baseCurrency = get().app.baseCurrency;
     const rates        = get().app.rates;
     const balanceAfterBase = convert(balanceAfter, debt.currency, baseCurrency, rates);
+    // The caller must supply an explicit, user-confirmed date. `date` may be
+    // omitted only by legacy callers — never invented silently in the UI layer.
+    const effectiveDate = date || nowISO();
 
-    // Audit-trail transaction so this shows up in History
+    // Audit-trail transaction so this shows up in History.
+    // Paying an 'owe' debt debits cash (principal + interest both leave a
+    // bucket); principal additionally reduces outstanding debt below.
+    // A received repayment credits cash back the same way.
     const totalPaid = cappedAmount + (Number(interestPaid) || 0);
     const auditTx = {
-      id: uid('tx'), date: nowISO(),
+      id: uid('tx'), date: effectiveDate,
       amount: totalPaid,
       currency: debt.currency,
       category: direction === 'owe' ? 'Repayment' : 'Repayment received',
@@ -1156,7 +1162,8 @@ const personalSlice = (set, get) => ({
         ? `Paid ${debt.creditor}${interestPaid > 0 ? ` (incl. ${interestPaid} interest)` : ''}`
         : `${debt.creditor} repaid`,
       tags: '',
-      buckets: {},
+      buckets: { [sourceBucketKey]: direction === 'owe' ? -totalPaid : totalPaid },
+      interestAmount: Number(interestPaid) || 0,
       linkedDebtId: debtId,
       createdAt: nowISO(), updatedAt: nowISO(),
       _pending: true,
@@ -1169,7 +1176,7 @@ const personalSlice = (set, get) => ({
       amount: cappedAmount, currency: debt.currency,
       balanceAfter, balanceAfterBase, baseCurrency,
       interestPaid: Number(interestPaid) || 0,
-      notes: '', date: nowISO(), createdAt: nowISO(),
+      notes: '', date: effectiveDate, createdAt: nowISO(),
     };
     set((s) => ({ personal: { ...s.personal, debtEvents: [...s.personal.debtEvents, event] } }));
     enqueue(set, get, 'debtEvent', 'create', event);
@@ -2171,43 +2178,100 @@ export const selectTotalReceivableInBase = (state) => {
   return sum;
 };
 
-// Round E: Net worth = cash liquid + investments + ventures + receivables − debts(owe)
-// Borrowed pool NOT counted (offset by debt). Lent money debits bucket but creates
-// equal receivable → cancels out by construction.
-export const selectNetWorth = (state) => {
+// ─── Authoritative net-worth math ──────────────────────────
+// Net Worth = Total Assets − Total Liabilities.
+//   Total Assets      = net cash (all bucket balances) + undeployed borrowed pool
+//                       + investments current value + ventures current valuation
+//                       + outstanding receivables
+//   Total Liabilities = outstanding 'owe' debt principal
+//
+// Rules enforced here:
+//   • Retained borrowed money IS an asset (the undeployed pool); it is offset
+//     by the matching debt in liabilities, so borrowing is net-worth neutral.
+//   • The pool only counts the UNDEPLOYED portion — deployed money is already
+//     counted inside the investment/venture/bucket it ended up in (no double count).
+//   • Receivables are assets, never liabilities; 'owe' debts are liabilities.
+//   • Buckets are allocations of existing money — never added separately.
+export function computeTotalLiabilities(debts, debtEvents, base, rates) {
+  let sum = 0;
+  for (const d of (debts || [])) {
+    if ((d.direction || 'owe') !== 'owe') continue;
+    if (d.status === 'paid') continue;
+    const repaid = computeDebtRepaid(debtEvents || [], d.id);
+    const remaining = (Number(d.principal) || 0) - repaid;
+    if (remaining > 0) sum += convert(remaining, d.currency || 'USD', base, rates);
+  }
+  return sum;
+}
+
+export function computeTotalReceivables(debts, debtEvents, base, rates) {
+  let sum = 0;
+  for (const d of (debts || [])) {
+    if (d.direction !== 'receivable') continue;
+    const repaid = computeDebtRepaid(debtEvents || [], d.id);
+    const remaining = (Number(d.principal) || 0) - repaid;
+    if (remaining > 0) sum += convert(remaining, d.currency || 'USD', base, rates);
+  }
+  return sum;
+}
+
+export function computeInvestmentsValue(investments, base, rates) {
+  let sum = 0;
+  for (const inv of (investments || [])) {
+    sum += convert((Number(inv.units) || 0) * (Number(inv.currentPrice) || 0), inv.currency, base, rates);
+  }
+  return sum;
+}
+
+export function computeVenturesValue(ventures, base, rates) {
+  let sum = 0;
+  for (const v of (ventures || [])) {
+    if (v.status === 'failed') continue;
+    sum += convert(Number(v.currentValuation) || 0, v.valuationCurrency || 'USD', base, rates);
+  }
+  return sum;
+}
+
+// Net cash = sum of ALL bucket balances (a negative bucket is overspent cash).
+export function computeNetCash(transactions, base, rates) {
+  const balances = computeBucketBalances(transactions, base, rates);
+  let total = 0;
+  for (const v of Object.values(balances)) total += v;
+  return total;
+}
+
+export function computeTotalAssets(personal, base, rates) {
+  return computeNetCash(personal.transactions || [], base, rates)
+    + computeBorrowedPool(
+      personal.debts || [], personal.debtEvents || [], personal.borrowedDeployments || [], base, rates,
+    )
+    + computeInvestmentsValue(personal.investments || [], base, rates)
+    + computeVenturesValue(personal.ventures || [], base, rates)
+    + computeTotalReceivables(personal.debts || [], personal.debtEvents || [], base, rates);
+}
+
+export const selectTotalLiquidAssets = (state) => {
   const base = state.app.baseCurrency;
   const rates = state.app.rates;
-  const liquid = computeTotalLiquid(state.personal.transactions || [], base, rates);
-
-  let invValue = 0;
-  for (const inv of (state.personal.investments || [])) {
-    invValue += convert(inv.units * inv.currentPrice, inv.currency, base, rates);
-  }
-
-  let ventureValue = 0;
-  for (const v of (state.personal.ventures || [])) {
-    if (v.status === 'failed') continue;
-    ventureValue += convert(Number(v.currentValuation) || 0, v.valuationCurrency || 'USD', base, rates);
-  }
-
-  let receivables = 0;
-  for (const d of (state.personal.debts || [])) {
-    if (d.direction !== 'receivable') continue;
-    const repaid = computeDebtRepaid(state.personal.debtEvents || [], d.id);
-    const remaining = d.principal - repaid;
-    if (remaining > 0) receivables += convert(remaining, d.currency, base, rates);
-  }
-
-  let debts = 0;
-  for (const d of (state.personal.debts || [])) {
-    if ((d.direction || 'owe') !== 'owe') continue;
-    const repaid = computeDebtRepaid(state.personal.debtEvents || [], d.id);
-    const remaining = d.principal - repaid;
-    if (remaining > 0) debts += convert(remaining, d.currency, base, rates);
-  }
-
-  return liquid + invValue + ventureValue + receivables - debts;
+  return computeTotalLiquid(state.personal.transactions || [], base, rates)
+    + computeBorrowedPool(
+      state.personal.debts || [], state.personal.debtEvents || [],
+      state.personal.borrowedDeployments || [], base, rates,
+    );
 };
+
+export const selectTotalAssets = (state) =>
+  computeTotalAssets(state.personal, state.app.baseCurrency, state.app.rates);
+
+export const selectTotalLiabilities = (state) =>
+  computeTotalLiabilities(
+    state.personal.debts || [], state.personal.debtEvents || [],
+    state.app.baseCurrency, state.app.rates,
+  );
+
+// The single net-worth definition for the whole app:
+// Net Worth = Total Assets − Total Liabilities.
+export const selectNetWorth = (state) => selectTotalAssets(state) - selectTotalLiabilities(state);
 
 // Borrowed pool selector
 export const selectBorrowedPool = (state) => computeBorrowedPool(
@@ -2218,6 +2282,9 @@ export const selectBorrowedPool = (state) => computeBorrowedPool(
   state.app.rates,
 );
 
+// Monthly EARNED summary — borrowed/lent money and debt repayments are
+// balance-sheet movements, never income or consumption, so they're excluded.
+// This is the "Monthly Net Profit" basis.
 export function computeMonthSummary(transactions, base, rates) {
   const monthStart = new Date();
   monthStart.setDate(1);
@@ -2226,11 +2293,58 @@ export function computeMonthSummary(transactions, base, rates) {
   for (const t of transactions) {
     if (new Date(t.date) < monthStart) continue;
     if (t.type === 'transfer') continue;
+    if (t.category === BORROWED_CATEGORY || t.category === LENT_CATEGORY) continue;
     const v = convert(Math.abs(t.amount), t.currency || 'USD', base, rates);
+    if (t.category === 'Repayment' || t.category === 'Repayment received') {
+      // Principal is balance-sheet movement; only the interest portion is an expense.
+      const interest = convert(Math.abs(Number(t.interestAmount) || 0), t.currency || 'USD', base, rates);
+      if (interest > 0) expense += interest;
+      continue;
+    }
     if (t.type === 'income') income += v;
     else if (t.type === 'expense') expense += v;
   }
   return { income, expense, net: income - expense };
+}
+
+// Monthly NET CASH FLOW — actual money movement (all non-transfer txs,
+// including borrowed receipts and repayments). Distinct from profit.
+export function computeMonthCashFlow(transactions, base, rates) {
+  const monthStart = new Date();
+  monthStart.setDate(1);
+  monthStart.setHours(0, 0, 0, 0);
+  let cashIn = 0, cashOut = 0;
+  for (const t of transactions) {
+    if (new Date(t.date) < monthStart) continue;
+    if (t.type === 'transfer') continue;
+    const v = convert(Math.abs(t.amount), t.currency || 'USD', base, rates);
+    if (t.type === 'income') cashIn += v;
+    else if (t.type === 'expense') cashOut += v;
+  }
+  return { cashIn, cashOut, net: cashIn - cashOut };
+}
+
+// Recurring revenue — a forward-looking business metric, never added to
+// net worth. Monthlyized equivalent of active recurring income templates.
+export function computeRecurringRevenueMonthly(recurring, base, rates) {
+  let total = 0;
+  for (const r of (recurring || [])) {
+    if (r.type !== 'income') continue;
+    if (r.enabled === false || r.status === 'paused') continue;
+    const v = convert(Math.abs(Number(r.amount) || 0), r.currency || 'USD', base, rates);
+    const interval = Math.max(1, Number(r.interval) || 1);
+    let monthly = v;
+    switch (r.frequency) {
+      case 'daily':    monthly = v * (30 / interval); break;
+      case 'weekly':   monthly = v * (4.345 / interval); break;
+      case 'biweekly': monthly = v * (2.1725 / interval); break;
+      case 'yearly':   monthly = v / (12 * interval); break;
+      case 'monthly':
+      default:         monthly = v / interval; break;
+    }
+    total += monthly;
+  }
+  return total;
 }
 
 export function computeInvestmentTotals(investments, base, rates) {

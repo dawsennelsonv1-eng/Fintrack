@@ -181,9 +181,12 @@ export default function DebtModule() {
 
 function DebtRow({ debt, idx, baseCurrency, rates, borrowedDeployments, investments, ventures, ventureEvents, ventureDistributions, onDelete }) {
   const recordRepayment = useStore((s) => s.recordRepayment);
+  const buckets = useStore((s) => s.personal.buckets);
   const [paying, setPaying] = useState(false);
   const [amount, setAmount] = useState('');
   const [interestPaid, setInterestPaid] = useState('');
+  const [payDate, setPayDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [payBucket, setPayBucket] = useState('operations');
   const [showHistory, setShowHistory] = useState(false);
   const [showTrail, setShowTrail] = useState(false);
 
@@ -213,8 +216,11 @@ function DebtRow({ debt, idx, baseCurrency, rates, borrowedDeployments, investme
     e.preventDefault();
     const v = parseFloat(amount);
     if (!v || v <= 0) return;
+    if (!payDate) return; // explicit date confirmation required
     const i = parseFloat(interestPaid) || 0;
-    recordRepayment(debt.id, v, { interestPaid: i });
+    // Noon UTC anchor avoids timezone day-shift on the recorded date.
+    const isoDate = new Date(`${payDate}T12:00:00`).toISOString();
+    recordRepayment(debt.id, v, { interestPaid: i, date: isoDate, sourceBucketKey: payBucket });
     setAmount(''); setInterestPaid(''); setPaying(false);
   };
 
@@ -322,7 +328,27 @@ function DebtRow({ debt, idx, baseCurrency, rates, borrowedDeployments, investme
                       placeholder={`Interest paid (${debt.currency}, optional)`}
                       className="w-full px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm num focus:ring-2 focus:ring-[var(--border)]" />
                   )}
-                  <button type="submit" disabled={!amount || parseFloat(amount) <= 0}
+                  {/* Explicit date — never silently assumed */}
+                  <div className="flex items-center gap-2">
+                    <label className="text-[10px] uppercase tracking-[0.1em] text-muted font-semibold whitespace-nowrap">
+                      Date {isReceivable ? 'received' : 'paid'}
+                    </label>
+                    <input type="date" required value={payDate} onChange={(e) => setPayDate(e.target.value)}
+                      className="flex-1 px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm focus:ring-2 focus:ring-[var(--border)]" />
+                  </div>
+                  {/* Which bucket the money leaves / returns to */}
+                  <div className="flex items-center gap-2">
+                    <label className="text-[10px] uppercase tracking-[0.1em] text-muted font-semibold whitespace-nowrap">
+                      {isReceivable ? 'Into bucket' : 'From bucket'}
+                    </label>
+                    <select value={payBucket} onChange={(e) => setPayBucket(e.target.value)}
+                      className="flex-1 px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm focus:ring-2 focus:ring-[var(--border)]">
+                      {buckets.map((b) => (
+                        <option key={b.key} value={b.key}>{b.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <button type="submit" disabled={!amount || parseFloat(amount) <= 0 || !payDate}
                     className="w-full px-4 py-2 rounded-lg bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 text-sm font-medium disabled:opacity-40">
                     {isReceivable ? 'Receive' : 'Pay'}
                   </button>

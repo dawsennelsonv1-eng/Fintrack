@@ -66,12 +66,17 @@ export default function QuickAdd() {
   const [pendingTxData, setPendingTxData] = useState(null);
   const [pendingWarningBucket, setPendingWarningBucket] = useState(null);
 
+  // Borrowed-money classification modal
+  const [borrowModalOpen, setBorrowModalOpen] = useState(false);
+  const [pendingBorrowData, setPendingBorrowData] = useState(null);
+
   const addTransaction    = useStore((s) => s.addTransaction);
   const updateTransaction = useStore((s) => s.updateTransaction);
   const setEditingTx      = useStore((s) => s.setEditingTx);
   const addRecurring      = useStore((s) => s.addRecurring);
   const addTemplate       = useStore((s) => s.addTemplate);
   const useTemplate       = useStore((s) => s.useTemplate);
+  const recordBorrowedDeployment = useStore((s) => s.recordBorrowedDeployment);
 
   const editingId  = useStore(selectEditingTxId);
   const transactions = useStore(selectTransactions);
@@ -304,7 +309,70 @@ export default function QuickAdd() {
       }
     }
 
+    // New borrowed money must be classified before it is recorded:
+    // has it already been spent, or is it still available?
+    if (isBorrowed) {
+      setPendingBorrowData(buildTxData());
+      setBorrowModalOpen(true);
+      return;
+    }
+
     addTransaction(buildTxData());
+    close();
+  };
+
+  // ─── Borrowed-money classification commits ───────────────
+  const closeBorrowModal = () => {
+    setBorrowModalOpen(false);
+    setPendingBorrowData(null);
+  };
+
+  // Already spent: record the liability + history, but the cash is gone,
+  // so the pool is immediately marked fully deployed as 'spent'.
+  const commitBorrowedSpent = () => {
+    const tx = addTransaction(pendingBorrowData);
+    if (tx?.linkedDebtId) {
+      recordBorrowedDeployment({
+        sourceDebtId: tx.linkedDebtId,
+        destinationType: 'spent',
+        destinationLabel: 'Spent (consumed)',
+        amount: pendingBorrowData.amount,
+        currency: pendingBorrowData.currency,
+        note: 'Borrowed money already spent',
+      });
+    }
+    closeBorrowModal();
+    close();
+  };
+
+  // Still available, kept in the borrowed pool: assets + liabilities both
+  // rise by the principal — net worth unchanged.
+  const commitBorrowedPool = () => {
+    addTransaction(pendingBorrowData);
+    closeBorrowModal();
+    close();
+  };
+
+  // Still available, allocated across buckets: the tx credits the buckets
+  // and matching deployment rows zero out the pool (no double counting).
+  const commitBorrowedAllocate = (allocMap) => {
+    const tx = addTransaction({ ...pendingBorrowData, buckets: allocMap });
+    if (tx?.linkedDebtId) {
+      for (const [bucketKey, v] of Object.entries(allocMap)) {
+        const amt = Number(v) || 0;
+        if (amt <= 0) continue;
+        recordBorrowedDeployment({
+          sourceDebtId: tx.linkedDebtId,
+          destinationType: 'bucket',
+          destinationId: bucketKey,
+          destinationLabel: buckets.find((b) => b.key === bucketKey)?.name || bucketKey,
+          amount: amt,
+          currency: pendingBorrowData.currency,
+          note: 'Borrowed money allocated to bucket',
+        });
+      }
+    }
+    closeBorrowModal();
     close();
   };
 
@@ -774,7 +842,150 @@ export default function QuickAdd() {
         onConfirm={confirmWarning}
         onCancel={cancelWarning}
       />
+
+      {/* Borrowed money: classify before recording */}
+      <BorrowedMoneyModal
+        open={borrowModalOpen}
+        amount={pendingBorrowData?.amount || 0}
+        currency={pendingBorrowData?.currency || 'USD'}
+        counterparty={pendingBorrowData?.counterparty || ''}
+        buckets={sourceBuckets}
+        onSpent={commitBorrowedSpent}
+        onKeepPool={commitBorrowedPool}
+        onAllocate={commitBorrowedAllocate}
+        onCancel={closeBorrowModal}
+      />
     </>
+  );
+}
+
+// ─── BorrowedMoneyModal ────────────────────────────────────
+// Shown when recording new borrowed money. The user must answer:
+// "Has this borrowed money already been spent, or is it still available?"
+// Borrowed money is never earned income; the full debt always stays in
+// Total Liabilities either way.
+function BorrowedMoneyModal({ open, amount, currency, counterparty, buckets, onSpent, onKeepPool, onAllocate, onCancel }) {
+  const [mode, setMode] = useState(null); // null | 'available'
+  const [alloc, setAlloc] = useState({});
+  const [showAlloc, setShowAlloc] = useState(false);
+
+  useEffect(() => {
+    if (open) { setMode(null); setAlloc({}); setShowAlloc(false); }
+  }, [open]);
+
+  const allocTotal = Object.values(alloc).reduce((s, v) => s + (Number(v) || 0), 0);
+  const allocValid = showAlloc && Math.abs(allocTotal - amount) < 0.005;
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[60] bg-black/50 flex items-end sm:items-center justify-center p-4"
+          onClick={onCancel}
+        >
+          <motion.div
+            initial={{ y: 40, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 40, opacity: 0 }}
+            transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md surface border rounded-2xl p-5 space-y-4"
+          >
+            <div>
+              <h3 className="font-display text-lg">Borrowed money</h3>
+              <p className="text-sm text-muted mt-1">
+                Has this {formatMoney(amount, currency)}{counterparty ? ` from ${counterparty}` : ''} already been spent, or is it still available for use?
+              </p>
+              <p className="text-[11px] text-muted mt-2">
+                Either way it's not income — the full {formatMoney(amount, currency)} stays in your liabilities until repaid.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <button
+                type="button" onClick={() => { setMode('available'); }}
+                className={`w-full text-left px-4 py-3 rounded-xl border transition-colors ${
+                  mode === 'available' ? 'border-accent-income bg-accent-income/5' : 'border-[var(--border)] bg-[var(--bg)]'
+                }`}
+              >
+                <div className="text-sm font-medium">Still available</div>
+                <div className="text-[11px] text-muted">
+                  Adds {formatMoney(amount, currency)} to your available funds and the same to your debts — net worth unchanged.
+                </div>
+              </button>
+
+              <button
+                type="button" onClick={onSpent}
+                className="w-full text-left px-4 py-3 rounded-xl border border-[var(--border)] bg-[var(--bg)] hover:bg-[var(--surface)] transition-colors"
+              >
+                <div className="text-sm font-medium">Already spent</div>
+                <div className="text-[11px] text-muted">
+                  Records the debt only — no cash added. Your net worth drops by the amount consumed.
+                </div>
+              </button>
+            </div>
+
+            {mode === 'available' && (
+              <div className="pt-1 space-y-3 border-t border-[var(--border)]">
+                <p className="text-[12px] text-muted pt-3">
+                  Allocate the borrowed funds across buckets?
+                </p>
+                {showAlloc && (
+                  <div className="space-y-2">
+                    {buckets.map((b) => (
+                      <div key={b.key} className="flex items-center gap-2">
+                        <span className="flex-1 text-sm truncate">{b.name}</span>
+                        <input
+                          type="number" step="0.01" min="0"
+                          value={alloc[b.key] ?? ''}
+                          onChange={(e) => setAlloc((a) => ({ ...a, [b.key]: e.target.value }))}
+                          placeholder="0.00"
+                          className="w-28 px-3 py-1.5 rounded-lg bg-[var(--bg)] outline-none text-sm num text-right focus:ring-2 focus:ring-[var(--border)]"
+                        />
+                      </div>
+                    ))}
+                    <div className={`text-[11px] text-right ${allocValid ? 'text-accent-income' : 'text-muted'}`}>
+                      Allocated {formatMoney(allocTotal, currency)} of {formatMoney(amount, currency)}
+                    </div>
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  {!showAlloc && (
+                    <button type="button" onClick={onKeepPool}
+                      className="flex-1 px-4 py-2.5 rounded-xl bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 text-sm font-medium">
+                      Keep as borrowed pool
+                    </button>
+                  )}
+                  {!showAlloc ? (
+                    <button type="button" onClick={() => setShowAlloc(true)}
+                      className="flex-1 px-4 py-2.5 rounded-xl bg-[var(--bg)] border border-[var(--border)] text-sm font-medium">
+                      Allocate to buckets
+                    </button>
+                  ) : (
+                    <button type="button" disabled={!allocValid}
+                      onClick={() => {
+                        const cleaned = {};
+                        for (const [k, v] of Object.entries(alloc)) {
+                          const n = Number(v) || 0;
+                          if (n > 0) cleaned[k] = n;
+                        }
+                        onAllocate(cleaned);
+                      }}
+                      className="flex-1 px-4 py-2.5 rounded-xl bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 text-sm font-medium disabled:opacity-40">
+                      Confirm allocation
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <button type="button" onClick={onCancel}
+              className="w-full text-center text-xs text-muted py-1 hover:text-[var(--text)]">
+              Cancel
+            </button>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 
