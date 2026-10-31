@@ -1,26 +1,28 @@
-// src/modules/Debt.jsx — Round E
+
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Trash2, Info, ArrowDownLeft, ArrowUpRight, Percent, TrendingUp, TrendingDown,
-  Briefcase, Rocket, Wallet as WalletIcon, Banknote, ChevronDown, ChevronUp,
+Trash2, Info, ArrowDownLeft, ArrowUpRight, Percent, Flame, Calendar as CalendarIcon, ExternalLink,
 } from 'lucide-react';
 import {
   useStore,
   selectDebts, selectDebtEvents, selectTotalDebtInBase, selectTotalReceivableInBase,
   selectBaseCurrency, selectRates, selectBorrowedDeployments,
   selectInvestments, selectVentures, selectVentureEvents, selectVentureDistributions,
-  computeDebtsWithStatus, computeDebtTrail,
+selectTransactions, selectBudgetItems, selectBuckets, selectWallets,
+computeDebtsWithStatus, computeDebtTrail, computeDebtPayoffPlan, computeBucketBalances,
 } from '../store/useStore';
 import { formatMoney, formatCompact } from '../lib/currency';
 import { fadeUp, ease } from '../lib/util';
 
-const DESTINATION_ICONS = {
-  investment: Briefcase,
-  venture:    Rocket,
-  bucket:     WalletIcon,
-  cash:       Banknote,
-};
+function toDateKey(d) {
+const dt = new Date(d);
+if (isNaN(dt)) return new Date().toISOString().slice(0, 10);
+const y = dt.getFullYear();
+const m = String(dt.getMonth() + 1).padStart(2, '0');
+const day = String(dt.getDate()).padStart(2, '0');
+return `${y}-${m}-${day}`;
+}
 
 export default function DebtModule() {
   const rawDebts        = useStore(selectDebts);
@@ -35,8 +37,12 @@ export default function DebtModule() {
   const ventures        = useStore(selectVentures);
   const ventureEvents   = useStore(selectVentureEvents);
   const ventureDists    = useStore(selectVentureDistributions);
+const transactions    = useStore(selectTransactions);
+const budgetItems     = useStore(selectBudgetItems);
+const openCalendarOnDate = useStore((s) => s.openCalendarOnDate);
+const setHighlightedTxId = useStore((s) => s.setHighlightedTxId);
 
-  // Tick a counter every minute so accrued interest re-renders live
+const [strategy, setStrategy] = useState('snowball');
   const [, setTick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 60_000);
@@ -48,10 +54,27 @@ export default function DebtModule() {
     [rawDebts, debtEvents, baseCurrency, rates]
   );
 
+const bucketBalances = useMemo(
+() => computeBucketBalances(transactions, baseCurrency, rates),
+[transactions, baseCurrency, rates]
+);
+const debtBucketBalance = bucketBalances.debtRepayment || 0;
+const payoffPlan = useMemo(
+() => computeDebtPayoffPlan(rawDebts, debtEvents, transactions, budgetItems, baseCurrency, rates, strategy),
+[rawDebts, debtEvents, transactions, budgetItems, baseCurrency, rates, strategy]
+);
   const owedDebts       = useMemo(() => allDebts.filter((d) => d.direction === 'owe'), [allDebts]);
   const receivableDebts = useMemo(() => allDebts.filter((d) => d.direction === 'receivable'), [allDebts]);
   const netPosition = totalReceivable - totalOwe;
   const hasAny = allDebts.length > 0;
+const handleJumpToExpense = (ev) => {
+if (ev.linkedTxId) {
+setHighlightedTxId(ev.linkedTxId);
+}
+if (ev.date) {
+openCalendarOnDate(toDateKey(ev.date), 'day');
+}
+};
 
   return (
     <main className="max-w-2xl mx-auto px-5 pt-4 pb-32">
@@ -67,6 +90,11 @@ export default function DebtModule() {
         }`}>
         <div className="flex items-baseline justify-between mb-1">
           <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">Net position</div>
+{totalOwe > 0 && (
+<span className="text-[10px] px-2 py-0.5 rounded-full bg-accent-expense/15 text-accent-expense font-semibold">
+Danger Mode Active · 40% to Debt
+</span>
+)}
         </div>
         <div className={`font-display text-5xl num ${
           netPosition < 0 ? 'text-accent-expense' :
@@ -75,10 +103,14 @@ export default function DebtModule() {
           {netPosition >= 0 ? '+' : '−'}{formatMoney(Math.abs(netPosition), baseCurrency)}
         </div>
         {hasAny && (
-          <div className="mt-3 grid grid-cols-2 gap-3 text-[11px]">
+<div className="mt-3 grid grid-cols-3 gap-2 text-[11px] pt-3 border-t border-[var(--border)]">
             <div>
               <div className="text-muted">You owe</div>
               <div className="font-medium num text-accent-expense">{formatMoney(totalOwe, baseCurrency)}</div>
+</div>
+<div>
+<div className="text-muted">In 40% Debt Bucket</div>
+<div className="font-medium num text-accent-income">{formatMoney(Math.max(0, debtBucketBalance), baseCurrency)}</div>
             </div>
             <div className="text-right">
               <div className="text-muted">Owed to you</div>
@@ -88,23 +120,58 @@ export default function DebtModule() {
         )}
       </motion.section>
 
-      <motion.div {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.08 }}
-        className="rounded-2xl border border-dashed border-[var(--border)] p-4 mb-5 bg-[var(--bg)]">
-        <div className="flex items-start gap-3">
-          <div className="w-8 h-8 rounded-lg bg-[var(--surface)] flex items-center justify-center shrink-0">
-            <Info size={14} className="text-muted" />
-          </div>
-          <div className="flex-1">
-            <div className="text-[12px] font-medium mb-1">Recording new debts</div>
-            <div className="text-[11px] text-muted leading-relaxed">
-              Use the + button (QuickAdd) and pick category:
-              <br />• <span className="text-accent-income font-medium">Borrowed</span> (income) — money loaned to you (interest rate optional)
-              <br />• <span className="text-accent-expense font-medium">Lent</span> (expense) — money you loaned out
-              <br />Borrowed money lands in a separate pool — deploy from Wealth tab.
+{/* Snowball vs Avalanche Optimizer */}
+{payoffPlan.schedule.length > 0 && (
+<motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.07 }}
+className="surface border rounded-2xl p-4 mb-5">
+<div className="flex items-center justify-between gap-2 mb-3">
+<div className="flex items-center gap-2">
+<Flame size={15} className="text-accent-expense" />
+<div>
+<div className="text-xs font-semibold">40% Debt Payoff Optimizer</div>
+<div className="text-[10px] text-muted num">
+Est. {formatCompact(payoffPlan.weeklyDebtPower, baseCurrency)}/wk ({formatCompact(payoffPlan.monthlyDebtPower, baseCurrency)}/mo) payoff power
+</div>
+</div>
+</div>
+<div className="flex gap-1 p-1 rounded-xl bg-[var(--bg)] text-[10px]">
+{[
+{ id: 'snowball',  label: 'Snowball (Smallest)' },
+{ id: 'avalanche', label: 'Avalanche (Interest)' },
+].map((s) => (
+<button
+key={s.id}
+type="button"
+onClick={() => setStrategy(s.id)}
+className={`px-2 py-1 rounded-lg font-medium ${
+strategy === s.id ? 'bg-[var(--surface)] shadow-sm text-[var(--text)]' : 'text-muted'
+}`}
+>
+{s.label}
+</button>
+))}
             </div>
           </div>
-        </div>
-      </motion.div>
+<div className="space-y-1.5">
+{payoffPlan.schedule.map((item) => (
+<div key={item.id} className="bg-[var(--bg)] rounded-xl px-3 py-2 flex items-center justify-between text-xs">
+<div className="flex items-center gap-2 min-w-0">
+<span className="w-5 h-5 rounded-full bg-accent-expense/15 text-accent-expense text-[10px] font-bold flex items-center justify-center shrink-0">
+{item.order}
+</span>
+<span className="font-medium truncate">{item.creditor}</span>
+</div>
+<div className="text-right num shrink-0">
+<span className="font-medium">{formatMoney(item.remaining, item.currency)}</span>
+{item.weeksToClear && (
+<span className="text-[10px] text-muted ml-2">· Cleared in ≈ {item.weeksToClear}w</span>
+)}
+</div>
+</div>
+))}
+</div>
+</motion.section>
+)}
 
       <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.1 }} className="mb-5">
         <div className="flex items-baseline justify-between mb-3 px-1">
@@ -119,7 +186,7 @@ export default function DebtModule() {
 
         {owedDebts.length === 0 ? (
           <div className="surface border rounded-2xl p-6 text-center">
-            <div className="text-sm text-muted">Nothing owed. Keep it that way.</div>
+<div className="text-sm text-muted">Nothing owed. Normal Mode (50/30/10/5/5) unlocked!</div>
           </div>
         ) : (
           <div className="space-y-3">
@@ -133,6 +200,7 @@ export default function DebtModule() {
                   ventures={ventures}
                   ventureEvents={ventureEvents}
                   ventureDistributions={ventureDists}
+onJumpToExpense={handleJumpToExpense}
                   onDelete={() => removeDebt(d.id)}
                 />
               ))}
@@ -168,6 +236,7 @@ export default function DebtModule() {
                   ventures={ventures}
                   ventureEvents={ventureEvents}
                   ventureDistributions={ventureDists}
+onJumpToExpense={handleJumpToExpense}
                   onDelete={() => removeDebt(d.id)}
                 />
               ))}
@@ -179,71 +248,38 @@ export default function DebtModule() {
   );
 }
 
-function DebtRow({ debt, idx, baseCurrency, rates, borrowedDeployments, investments, ventures, ventureEvents, ventureDistributions, onDelete }) {
+function DebtRow({ debt, idx, baseCurrency, rates, onJumpToExpense, onDelete }) {
   const recordRepayment = useStore((s) => s.recordRepayment);
-  const recordBorrowedDeployment = useStore((s) => s.recordBorrowedDeployment);
-  const buckets = useStore((s) => s.personal.buckets);
+const buckets = useStore(selectBuckets);
+const wallets = useStore(selectWallets);
   const [paying, setPaying] = useState(false);
   const [amount, setAmount] = useState('');
   const [interestPaid, setInterestPaid] = useState('');
   const [payDate, setPayDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [payBucket, setPayBucket] = useState('operations');
-  const [showHistory, setShowHistory] = useState(false);
-  const [showTrail, setShowTrail] = useState(false);
-  const [markUsedOpen, setMarkUsedOpen] = useState(false);
-  const pressTimer = useRef(null);
-
-  const startPress = () => {
-    pressTimer.current = setTimeout(() => {
-      if (navigator.vibrate) navigator.vibrate(15);
-      setMarkUsedOpen(true);
-    }, 450);
-  };
-  const cancelPress = () => { if (pressTimer.current) clearTimeout(pressTimer.current); };
-
-  const markUsed = () => {
-    recordBorrowedDeployment({
-      sourceDebtId: debt.id,
-      destinationType: 'spent',
-      destinationLabel: 'Spent (consumed)',
-      amount: Number(debt.principal) || 0,
-      currency: debt.currency,
-      note: 'Marked as already used',
-    });
-    setMarkUsedOpen(false);
-  };
+const [payBucket, setPayBucket] = useState('debtRepayment');
+const [payWallet, setPayWallet] = useState(wallets[0]?.id || 'w_moncash');
+const [showHistory, setShowHistory] = useState(true);
 
   const { remaining, remainingBase, repaid, events = [], direction, interestRate, accruedInterest, projectedPayback } = debt;
   const pct = debt.principal > 0 ? repaid / debt.principal : 0;
   const isPaid = remaining <= 0;
   const isReceivable = direction === 'receivable';
 
-  // Round E: deployment trail (only for borrowed money — direction='owe')
-  const trail = useMemo(() => {
-    if (isReceivable) return [];
-    return computeDebtTrail(
-      debt, borrowedDeployments, investments, ventures, ventureEvents, ventureDistributions, baseCurrency, rates
-    );
-  }, [debt, isReceivable, borrowedDeployments, investments, ventures, ventureEvents, ventureDistributions, baseCurrency, rates]);
-
-  const deployedTotalBase = useMemo(
-    () => trail.reduce((sum, t) => sum + (Number(t.amountBase) || 0), 0),
-    [trail]
-  );
-  const trailRoiBase = useMemo(
-    () => trail.reduce((sum, t) => sum + (Number(t.roi) || 0), 0),
-    [trail]
-  );
 
   const submit = (e) => {
     e.preventDefault();
     const v = parseFloat(amount);
     if (!v || v <= 0) return;
-    if (!payDate) return; // explicit date confirmation required
+if (!payDate) return;
     const i = parseFloat(interestPaid) || 0;
-    // Noon UTC anchor avoids timezone day-shift on the recorded date.
+
     const isoDate = new Date(`${payDate}T12:00:00`).toISOString();
-    recordRepayment(debt.id, v, { interestPaid: i, date: isoDate, sourceBucketKey: payBucket });
+recordRepayment(debt.id, v, {
+interestPaid: i,
+date: isoDate,
+sourceBucketKey: payBucket,
+walletId: payWallet,
+});
     setAmount(''); setInterestPaid(''); setPaying(false);
   };
 
@@ -259,24 +295,31 @@ function DebtRow({ debt, idx, baseCurrency, rates, borrowedDeployments, investme
       initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8, scale: 0.98 }}
       transition={{ delay: idx * 0.04, duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
       className={`surface border rounded-2xl p-4 ${isPaid ? 'opacity-60' : ''}`}
-      onTouchStart={startPress}
-      onTouchEnd={cancelPress}
-      onTouchMove={cancelPress}
-      onTouchCancel={cancelPress}
-      onMouseDown={startPress}
-      onMouseUp={cancelPress}
-      onMouseLeave={cancelPress}
-      onContextMenu={(e) => { e.preventDefault(); cancelPress(); setMarkUsedOpen(true); }}
+
     >
       <div className="flex items-start justify-between gap-3 mb-2">
         <div className="flex-1 min-w-0">
+{/* Debt Name + Inline "-$10 / -1,000 HTG" Repayment Badges referring to the Expense Transaction */}
           <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="font-medium truncate">{debt.creditor}</h3>
+<h3 className="font-medium text-base truncate">{debt.creditor}</h3>
+{/* Inline badges for repayments made, linking directly to the Expense on that date */}
+{events.map((ev) => (
+<button
+key={ev.id}
+type="button"
+onClick={() => onJumpToExpense(ev)}
+className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-expense/15 text-accent-expense text-[11px] font-semibold num hover:bg-accent-expense hover:text-white transition-colors"
+title="Logged as Spending/Expense — tap to open that day's Spendings in Calendar"
+>
+<span>−{formatMoney(ev.amount, ev.currency)}</span>
+<ExternalLink size={9} />
+</button>
+))}
             {isPaid && <span className="text-[10px] px-2 py-0.5 rounded-full bg-accent-income/10 text-accent-income font-medium">{isReceivable ? 'COLLECTED' : 'PAID'}</span>}
             {isOverdue && <span className="text-[10px] px-2 py-0.5 rounded-full bg-accent-expense/10 text-accent-expense font-medium">OVERDUE</span>}
             {hasInterest && (
               <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400 font-medium">
-                <Percent size={9} />{interestRate}% {debt.interestType === 'compound' ? 'cmpd' : 'simp'}
+<Percent size={9} />{interestRate}%
               </span>
             )}
           </div>
@@ -310,7 +353,7 @@ function DebtRow({ debt, idx, baseCurrency, rates, borrowedDeployments, investme
           className="h-full bg-accent-income rounded-full" />
       </div>
 
-      {/* Round E: interest projection */}
+
       {hasInterest && !isPaid && (
         <div className="grid grid-cols-2 gap-2 mb-3 text-[11px]">
           <div className="bg-[var(--bg)] rounded-lg px-3 py-2">
@@ -334,15 +377,10 @@ function DebtRow({ debt, idx, baseCurrency, rates, borrowedDeployments, investme
         <>
           <div className="flex gap-2">
             <button onClick={() => setPaying((v) => !v)}
-              className="flex-1 text-xs py-2 rounded-lg bg-[var(--bg)] hover:bg-[var(--border)] transition-colors">
-              {paying ? 'Cancel' : (isReceivable ? 'Record receipt' : 'Record repayment')}
+className="flex-1 text-xs py-2 rounded-lg bg-[var(--bg)] hover:bg-[var(--border)] transition-colors font-medium">
+{paying ? 'Cancel' : (isReceivable ? 'Record receipt' : 'Pay debt (logs in Spendings)')}
             </button>
-            {events.length > 0 && (
-              <button onClick={() => setShowHistory((v) => !v)}
-                className="px-3 text-xs py-2 rounded-lg bg-[var(--bg)] hover:bg-[var(--border)] transition-colors">
-                {events.length} {events.length === 1 ? 'event' : 'events'}
-              </button>
-            )}
+
           </div>
           <AnimatePresence>
             {paying && (
@@ -352,36 +390,36 @@ function DebtRow({ debt, idx, baseCurrency, rates, borrowedDeployments, investme
               >
                 <div className="pt-3 space-y-2">
                   <input type="number" step="0.01" max={remaining} value={amount} onChange={(e) => setAmount(e.target.value)}
-                    placeholder={`Principal amount (${debt.currency})`}
-                    className="w-full px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm num focus:ring-2 focus:ring-[var(--border)]" />
-                  {hasInterest && (
-                    <input type="number" step="0.01" value={interestPaid} onChange={(e) => setInterestPaid(e.target.value)}
-                      placeholder={`Interest paid (${debt.currency}, optional)`}
-                      className="w-full px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm num focus:ring-2 focus:ring-[var(--border)]" />
-                  )}
-                  {/* Explicit date — never silently assumed */}
-                  <div className="flex items-center gap-2">
-                    <label className="text-[10px] uppercase tracking-[0.1em] text-muted font-semibold whitespace-nowrap">
-                      Date {isReceivable ? 'received' : 'paid'}
-                    </label>
-                    <input type="date" required value={payDate} onChange={(e) => setPayDate(e.target.value)}
-                      className="flex-1 px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm focus:ring-2 focus:ring-[var(--border)]" />
+placeholder={`Amount paid (${debt.currency})`}
+className="w-full px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm num" />
+<div className="grid grid-cols-2 gap-2">
+<div className="flex items-center gap-1.5">
+<label className="text-[10px] uppercase text-muted font-semibold">Date</label>
+<input type="date" required value={payDate} onChange={(e) => setPayDate(e.target.value)}
+className="flex-1 px-2.5 py-2 rounded-lg bg-[var(--bg)] outline-none text-xs" />
+</div>
+<select value={payWallet} onChange={(e) => setPayWallet(e.target.value)}
+className="px-2.5 py-2 rounded-lg bg-[var(--bg)] outline-none text-xs">
+{wallets.map((w) => (
+<option key={w.id} value={w.id}>{w.name} ({w.currency})</option>
+))}
+</select>
                   </div>
-                  {/* Which bucket the money leaves / returns to */}
+
                   <div className="flex items-center gap-2">
                     <label className="text-[10px] uppercase tracking-[0.1em] text-muted font-semibold whitespace-nowrap">
                       {isReceivable ? 'Into bucket' : 'From bucket'}
                     </label>
                     <select value={payBucket} onChange={(e) => setPayBucket(e.target.value)}
-                      className="flex-1 px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm focus:ring-2 focus:ring-[var(--border)]">
+className="flex-1 px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-xs">
                       {buckets.map((b) => (
-                        <option key={b.key} value={b.key}>{b.name}</option>
+<option key={b.key} value={b.key}>{b.name} ({b.percentage}%)</option>
                       ))}
                     </select>
                   </div>
                   <button type="submit" disabled={!amount || parseFloat(amount) <= 0 || !payDate}
-                    className="w-full px-4 py-2 rounded-lg bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 text-sm font-medium disabled:opacity-40">
-                    {isReceivable ? 'Receive' : 'Pay'}
+className="w-full px-4 py-2.5 rounded-lg bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 text-xs font-medium disabled:opacity-40">
+{isReceivable ? 'Receive' : `Pay & Log −${amount || 0} ${debt.currency} in Spendings`}
                   </button>
                 </div>
               </motion.form>
@@ -390,135 +428,32 @@ function DebtRow({ debt, idx, baseCurrency, rates, borrowedDeployments, investme
         </>
       )}
 
-      {/* Round E: deployment trail viewer (borrowed money only) */}
-      {!isReceivable && trail.length > 0 && (
-        <div className="mt-3 pt-3 border-t border-[var(--border)]">
-          <button
-            onClick={() => setShowTrail((v) => !v)}
-            className="w-full flex items-center justify-between gap-2 text-[11px] text-muted hover:text-[var(--text)] transition-colors"
-          >
-            <span className="flex items-center gap-1.5">
-              {showTrail ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-              Deployment trail · {trail.length} {trail.length === 1 ? 'item' : 'items'}
-            </span>
-            <span className={`num font-medium ${trailRoiBase >= 0 ? 'text-accent-income' : 'text-accent-expense'}`}>
-              {trailRoiBase >= 0 ? '+' : '−'}{formatCompact(Math.abs(trailRoiBase), baseCurrency)} ROI
-            </span>
-          </button>
-          <AnimatePresence>
-            {showTrail && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                className="overflow-hidden"
-              >
-                <div className="mt-3 space-y-2">
-                  <div className="text-[10px] text-muted px-1">
-                    Deployed {formatCompact(deployedTotalBase, baseCurrency)} of {formatCompact(debt.principal, debt.currency)}
-                  </div>
-                  {trail.map((t) => {
-                    const Icon = DESTINATION_ICONS[t.destinationType] || Banknote;
-                    const roiPositive = (t.roi || 0) >= 0;
-                    return (
-                      <div key={t.id} className="bg-[var(--bg)] rounded-lg p-3">
-                        <div className="flex items-center gap-2 mb-1">
-                          <div className="w-7 h-7 rounded-lg bg-[var(--surface)] flex items-center justify-center shrink-0">
-                            <Icon size={12} className="text-muted" />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-[12px] font-medium truncate">
-                              {t.destinationLabel || t.destinationType}
-                            </div>
-                            <div className="text-[10px] text-muted">
-                              {new Date(t.date).toLocaleDateString('en', { month: 'short', day: 'numeric' })}
-                              {t.note ? ` · ${t.note}` : ''}
-                            </div>
-                          </div>
-                          <div className={`text-right num text-[11px] font-medium ${roiPositive ? 'text-accent-income' : 'text-accent-expense'}`}>
-                            {roiPositive ? <TrendingUp size={11} className="inline" /> : <TrendingDown size={11} className="inline" />}
-                            {' '}{roiPositive ? '+' : '−'}{formatCompact(Math.abs(t.roi || 0), baseCurrency)}
-                          </div>
-                        </div>
-                        <div className="flex items-center justify-between text-[10px] num text-muted pl-9">
-                          <span>Deployed {formatMoney(t.amount, t.currency)}</span>
-                          <span>→ Now worth {formatCompact(t.currentValueBase, baseCurrency)}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+{events.length > 0 && showHistory && (
+<div className="mt-3 pt-3 border-t border-[var(--border)] space-y-1.5">
+<div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1">
+Linked Expense Repayments (tap to view in Calendar Spendings)
+</div>
+{events.map((ev) => (
+<button
+key={ev.id}
+type="button"
+onClick={() => onJumpToExpense(ev)}
+className="w-full flex items-center justify-between text-[11px] num bg-[var(--bg)] hover:bg-[var(--border)]/60 rounded-lg px-2.5 py-1.5 transition-colors"
+>
+<span className="text-muted flex items-center gap-1.5">
+<CalendarIcon size={10} />
+{new Date(ev.date).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' })}
+<span className="text-[var(--text)] font-medium">· {ev.notes || `Paid ${debt.creditor}`}</span>
+</span>
+<div className="flex items-center gap-2">
+<span className="text-accent-expense font-semibold">−{formatMoney(ev.amount, ev.currency)}</span>
+<span className="text-muted">→ {formatMoney(ev.balanceAfter, ev.currency)} left</span>
+</div>
+</button>
+))}
         </div>
       )}
 
-      {(isPaid || events.length > 0) && (showHistory || isPaid) && (
-        <motion.div
-          initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
-          className="mt-3 pt-3 border-t border-[var(--border)] space-y-1.5"
-        >
-          <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1">
-            {isReceivable ? 'Receipt history' : 'Payment history'}
-          </div>
-          {events.map((ev) => (
-            <div key={ev.id} className="flex items-center justify-between text-[11px] num">
-              <span className="text-muted">
-                {new Date(ev.date).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' })}
-              </span>
-              <div className="flex items-center gap-3">
-                <span className="text-accent-income">−{formatMoney(ev.amount, ev.currency)}</span>
-                {ev.interestPaid > 0 && (
-                  <span className="text-amber-700 dark:text-amber-400 text-[10px]">+{formatCompact(ev.interestPaid, ev.currency)} int.</span>
-                )}
-                <span className="text-muted">→ {formatMoney(ev.balanceAfter, ev.currency)} left</span>
-              </div>
-            </div>
-          ))}
-        </motion.div>
-      )}
-
-      {!isPaid && events.length > 0 && !showHistory && (
-        <button onClick={() => setShowHistory(true)} className="w-full text-[11px] text-muted hover:text-[var(--text)] mt-2">
-          Show history
-        </button>
-      )}
-
-      {/* Long-press: mark borrowed money as already used */}
-      <AnimatePresence>
-        {markUsedOpen && (
-          <motion.div
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[60] bg-black/50 flex items-end sm:items-center justify-center p-4"
-            onClick={() => setMarkUsedOpen(false)}
-          >
-            <motion.div
-              initial={{ y: 40, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 40, opacity: 0 }}
-              transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-              onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-md surface border rounded-2xl p-5 space-y-4"
-            >
-              <div>
-                <h3 className="font-display text-lg">Mark as already used?</h3>
-                <p className="text-sm text-muted mt-1">
-                  This removes {formatMoney(debt.principal, debt.currency)} from your borrowed capital — it was already spent. The debt itself stays in your liabilities.
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <button type="button" onClick={() => setMarkUsedOpen(false)}
-                  className="flex-1 px-4 py-2.5 rounded-xl bg-[var(--bg)] border border-[var(--border)] text-sm font-medium">
-                  Cancel
-                </button>
-                <button type="button" onClick={markUsed}
-                  className="flex-1 px-4 py-2.5 rounded-xl bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 text-sm font-medium">
-                  Mark used
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </motion.div>
   );
 }

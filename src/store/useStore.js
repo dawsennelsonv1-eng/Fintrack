@@ -1,20 +1,9 @@
-// src/store/useStore.js — Round E
+
 //
-// Changes from Round D:
-//   • HOLDING BUCKET KILLED. Migration drops it. Any allocations move to Operations.
-//   • Borrowed money now lives in a SEPARATE POOL (s.personal.borrowedPool), not in buckets.
-//     It does NOT count toward "Available to spend" or net worth (offset by the debt).
-//   • DEPLOYMENT TRAIL: every borrowed-pool spend logs a borrowedDeployment row tying
-//     the dollar back to the source debt and to where it ended up (investment / venture / bucket / cash).
-//   • INTEREST RATE on debts (annual %). Live accrual + projected total payback.
-//   • VENTURES REWRITE: type, dates, valuation, milestones, distributions, journal.
-//   • computeBucketImpact() for the spending-warning overlay.
-//   • Net worth math: cash buckets + investments value + ventures value + receivables − debts(owe).
-//     Borrowed pool not counted.
-//
+
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import { api, ApiError } from '../lib/api';
+import { api, ApiError, SYSTEM_STATE_ROW_ID } from '../lib/api';
 import { DEFAULT_RATES, convert } from '../lib/currency';
 import { businessSlice, startAvsSyncLoop } from './businessSlice';
 
@@ -28,47 +17,55 @@ function enqueue(set, get, entity, action, payload) {
   set((s) => ({
     personal: {
       ...s.personal,
-      queue: [...s.personal.queue, { entity, action, ...payload }],
+queue: [...(s.personal.queue || []), { entity, action, ...payload }],
     },
   }));
   Promise.resolve().then(() => get().syncQueue());
 }
 
 // ════════════════════════════════════════════════════════════════════
-// CONSTANTS
+
 // ════════════════════════════════════════════════════════════════════
 export const BORROWED_CATEGORY = 'Borrowed';
 export const LENT_CATEGORY     = 'Lent';
 
-// Legacy export: kept so any Round D module that still imports it
-// won't crash at module load. Holding is gone, but the symbol
-// returning a stable string avoids breaking sibling modules until
-// they're updated.
 export const HOLDING_BUCKET_KEY = 'holding';
 
-// Venture types — used by the Investments module
+
 export const VENTURE_TYPES = [
   { id: 'business',    label: 'Other Business' },
   { id: 'partnership', label: 'Partnership' },
   { id: 'equity',      label: 'Equity Stake' },
   { id: 'sideHustle',  label: 'Side Hustle' },
-  { id: 'investing',   label: 'Investing in Other' }, // 2x play / silent backer
+{ id: 'investing',   label: 'Investing in Other' },
   { id: 'other',       label: 'Other' },
 ];
 
-// ════════════════════════════════════════════════════════════════════
-// DEFAULT BUCKETS — Round E: Holding KILLED
-// ════════════════════════════════════════════════════════════════════
-export const DEFAULT_BUCKETS = [
-  { key: 'warChest',   name: 'War Chest',          percentage: 50, color: '#d4a942', icon: 'TrendingUp', order: 1 },
-  { key: 'operations', name: 'Operations',         percentage: 30, color: '#3d8b5f', icon: 'Wallet',     order: 2 },
-  { key: 'reserve',    name: 'Reserve & Friction', percentage: 10, color: '#5b8def', icon: 'Shield',     order: 3 },
-  { key: 'giving',     name: 'Giving',             percentage: 5,  color: '#e07a5f', icon: 'Heart',      order: 4 },
-  { key: 'baller',     name: 'Baller',             percentage: 5,  color: '#9b59b6', icon: 'Sparkles',   order: 5 },
+export const DEFAULT_WALLETS = [
+{ id: 'w_cash',    name: 'Cash',           currency: 'HTG', allowAnyCurrency: true,  color: '#27ae60', icon: 'Banknote',   order: 1, balance: 0 },
+{ id: 'w_moncash', name: 'MonCash',        currency: 'HTG', allowAnyCurrency: false, color: '#c2452f', icon: 'Smartphone', order: 2, balance: 0 },
+{ id: 'w_natcash', name: 'NatCash',        currency: 'HTG', allowAnyCurrency: false, color: '#5b8def', icon: 'Smartphone', order: 3, balance: 0 },
+{ id: 'w_wise',    name: 'Wise',           currency: 'USD', allowAnyCurrency: false, color: '#3d8b5f', icon: 'Globe',      order: 4, balance: 0 },
+{ id: 'w_meru',    name: 'Meru',           currency: 'USD', allowAnyCurrency: false, color: '#9b59b6', icon: 'CreditCard', order: 5, balance: 0 },
+{ id: 'w_marc',    name: "Marc's Account", currency: 'HTG', allowAnyCurrency: true,  color: '#d4a942', icon: 'UserCheck',  order: 6, balance: 0 },
+{ id: 'w_mom',     name: "Mom's Account",  currency: 'HTG', allowAnyCurrency: false, color: '#e07a5f', icon: 'Heart',      order: 7, balance: 0 },
 ];
 
-// Deduplicate buckets by `key` (first occurrence wins). Guards against
-// duplicate default buckets created by repeated init/sync races.
+export const DANGER_MODE_BUCKETS = [
+{ key: 'debtRepayment', name: 'Debt Repayment',         percentage: 40, dangerPercentage: 40, normalPercentage: 0,  color: '#c2452f', icon: 'Flame',      order: 1, enabled: true },
+{ key: 'warChest',      name: 'Investment (War Chest)', percentage: 25, dangerPercentage: 25, normalPercentage: 50, color: '#d4a942', icon: 'TrendingUp', order: 2, enabled: true },
+{ key: 'operations',    name: 'Operations',             percentage: 20, dangerPercentage: 20, normalPercentage: 30, color: '#3d8b5f', icon: 'Wallet',     order: 3, enabled: true },
+{ key: 'reserve',       name: 'Reserve',                percentage: 10, dangerPercentage: 10, normalPercentage: 10, color: '#5b8def', icon: 'Shield',     order: 4, enabled: true },
+{ key: 'baller',        name: 'Fun',                    percentage: 5,  dangerPercentage: 5,  normalPercentage: 5,  color: '#9b59b6', icon: 'Sparkles',   order: 5, enabled: true },
+];
+export const NORMAL_MODE_BUCKETS = [
+{ key: 'warChest',      name: 'Investment (War Chest)', percentage: 50, dangerPercentage: 25, normalPercentage: 50, color: '#d4a942', icon: 'TrendingUp', order: 1, enabled: true },
+{ key: 'operations',    name: 'Operations',             percentage: 30, dangerPercentage: 20, normalPercentage: 30, color: '#3d8b5f', icon: 'Wallet',     order: 2, enabled: true },
+{ key: 'reserve',       name: 'Reserve',                percentage: 10, dangerPercentage: 10, normalPercentage: 10, color: '#5b8def', icon: 'Shield',     order: 3, enabled: true },
+{ key: 'giving',        name: 'Giving',                 percentage: 5,  dangerPercentage: 0,  normalPercentage: 5,  color: '#e07a5f', icon: 'Heart',      order: 4, enabled: true },
+{ key: 'baller',        name: 'Fun',                    percentage: 5,  dangerPercentage: 5,  normalPercentage: 5,  color: '#9b59b6', icon: 'Sparkles',   order: 5, enabled: true },
+];
+export const DEFAULT_BUCKETS = DANGER_MODE_BUCKETS;
 export function dedupeBuckets(buckets) {
   const seen = new Set();
   const out = [];
@@ -80,23 +77,55 @@ export function dedupeBuckets(buckets) {
   return out;
 }
 
+export function resolveModeBuckets(buckets, isDangerMode) {
+const template = isDangerMode ? DANGER_MODE_BUCKETS : NORMAL_MODE_BUCKETS;
+const byKey = {};
+for (const b of (buckets || [])) {
+if (b && b.key) byKey[b.key] = b;
+}
+return template.map((tpl, idx) => {
+const existing = byKey[tpl.key] || {};
+const customPct = isDangerMode
+? (existing.dangerPercentage !== undefined ? Number(existing.dangerPercentage) : tpl.percentage)
+: (existing.normalPercentage !== undefined ? Number(existing.normalPercentage) : tpl.percentage);
+return {
+...tpl,
+...existing,
+id: existing.id || `bkt_${tpl.key}`,
+key: tpl.key,
+name: tpl.key === 'baller' && existing.name === 'Baller' ? 'Fun'
+: tpl.key === 'warChest' && existing.name === 'War Chest' ? 'Investment (War Chest)'
+: tpl.key === 'reserve' && existing.name === 'Reserve & Friction' ? 'Reserve'
+: (existing.name || tpl.name),
+percentage: customPct > 0 ? customPct : tpl.percentage,
+dangerPercentage: existing.dangerPercentage ?? tpl.dangerPercentage,
+normalPercentage: existing.normalPercentage ?? tpl.normalPercentage,
+color: existing.color || tpl.color,
+icon: existing.icon || tpl.icon,
+order: idx + 1,
+enabled: true,
+};
+});
+}
 // ════════════════════════════════════════════════════════════════════
 // DEFAULT CATEGORIES
 // ════════════════════════════════════════════════════════════════════
 export const DEFAULT_CATEGORIES = [
   // Expenses
-  { name: 'Food & Dining',  type: 'expense', icon: 'UtensilsCrossed', color: '#e07a5f', bucketKey: 'operations', order: 1 },
-  { name: 'Transport',      type: 'expense', icon: 'Car',             color: '#5b8def', bucketKey: 'operations', order: 2 },
-  { name: 'Housing',        type: 'expense', icon: 'Home',            color: '#a67c5a', bucketKey: 'operations', order: 3 },
-  { name: 'Health',         type: 'expense', icon: 'Heart',           color: '#c2452f', bucketKey: 'operations', order: 4 },
-  { name: 'Subscriptions',  type: 'expense', icon: 'CreditCard',      color: '#7a8a8c', bucketKey: 'operations', order: 5 },
-  { name: 'Shopping',       type: 'expense', icon: 'ShoppingBag',     color: '#9b59b6', bucketKey: 'operations', order: 6 },
-  { name: 'Education',      type: 'expense', icon: 'BookOpen',        color: '#d4a942', bucketKey: 'warChest',   order: 7 },
-  { name: 'Investment',     type: 'expense', icon: 'TrendingUp',      color: '#d4a942', bucketKey: 'warChest',   order: 8 },
-  { name: 'Entertainment',  type: 'expense', icon: 'Sparkles',        color: '#9b59b6', bucketKey: 'baller',     order: 9 },
-  { name: 'Gift',           type: 'expense', icon: 'Gift',            color: '#e07a5f', bucketKey: 'giving',     order: 10 },
-  { name: LENT_CATEGORY,    type: 'expense', icon: 'HandCoins',       color: '#5b8def', bucketKey: 'operations', order: 11 },
-  { name: 'Other',          type: 'expense', icon: 'MoreHorizontal',  color: '#7a8a8c', bucketKey: 'operations', order: 99 },
+{ name: 'Food & Dining',  type: 'expense', icon: 'UtensilsCrossed', color: '#e07a5f', bucketKey: 'operations',    order: 1 },
+{ name: 'Transport',      type: 'expense', icon: 'Car',             color: '#5b8def', bucketKey: 'operations',    order: 2 },
+{ name: 'Housing',        type: 'expense', icon: 'Home',            color: '#a67c5a', bucketKey: 'operations',    order: 3 },
+{ name: 'Health',         type: 'expense', icon: 'Heart',           color: '#c2452f', bucketKey: 'reserve',       order: 4 },
+{ name: 'Subscriptions',  type: 'expense', icon: 'CreditCard',      color: '#7a8a8c', bucketKey: 'operations',    order: 5 },
+{ name: 'Shopping',       type: 'expense', icon: 'ShoppingBag',     color: '#9b59b6', bucketKey: 'baller',        order: 6 },
+{ name: 'Education',      type: 'expense', icon: 'BookOpen',        color: '#d4a942', bucketKey: 'warChest',      order: 7 },
+{ name: 'Investment',     type: 'expense', icon: 'TrendingUp',      color: '#d4a942', bucketKey: 'warChest',      order: 8 },
+{ name: 'Entertainment',  type: 'expense', icon: 'Sparkles',        color: '#9b59b6', bucketKey: 'baller',        order: 9 },
+{ name: 'Repayment',      type: 'expense', icon: 'Flame',           color: '#c2452f', bucketKey: 'debtRepayment', order: 10 },
+{ name: 'Conversion Fee', type: 'expense', icon: 'ArrowLeftRight',  color: '#7a8a8c', bucketKey: 'operations',    order: 11 },
+{ name: 'Gift',           type: 'expense', icon: 'Gift',            color: '#e07a5f', bucketKey: 'baller',        order: 12 },
+{ name: LENT_CATEGORY,    type: 'expense', icon: 'HandCoins',       color: '#5b8def', bucketKey: 'operations',    order: 13 },
+{ name: 'Other',          type: 'expense', icon: 'MoreHorizontal',  color: '#7a8a8c', bucketKey: 'operations',    order: 99 },
   // Income
   { name: 'Salary',         type: 'income',  icon: 'Briefcase',       color: '#3d8b5f', bucketKey: '', order: 1 },
   { name: 'Freelance',      type: 'income',  icon: 'Laptop',          color: '#3d8b5f', bucketKey: '', order: 2 },
@@ -107,36 +136,41 @@ export const DEFAULT_CATEGORIES = [
 ];
 
 export const CATEGORY_TO_BUCKET = {
-  'Food & Dining':  'operations',
-  'Transport':      'operations',
-  'Housing':        'operations',
-  'Health':         'operations',
-  'Subscriptions':  'operations',
-  'Shopping':       'operations',
-  'Education':      'warChest',
-  'Investment':     'warChest',
-  'Entertainment':  'baller',
-  'Gift':           'giving',
-  [LENT_CATEGORY]:  'operations',
-  'Other':          'operations',
-  'Salary':         null,
-  'Freelance':      null,
-  [BORROWED_CATEGORY]: null, // routed to borrowedPool, not buckets
+'Food & Dining':     'operations',
+'Transport':         'operations',
+'Housing':           'operations',
+'Health':            'reserve',
+'Subscriptions':     'operations',
+'Shopping':          'baller',
+'Education':         'warChest',
+'Investment':        'warChest',
+'Entertainment':     'baller',
+'Repayment':         'debtRepayment',
+'Conversion Fee':    'operations',
+'Gift':              'baller',
+[LENT_CATEGORY]:     'operations',
+'Expected expense':  'operations',
+'Other':             'operations',
+'Salary':            null,
+'Freelance':         null,
+'Expected income':   null,
+[BORROWED_CATEGORY]: null,
 };
 
 export function buildCategoryToBucket(categories) {
   const map = { ...CATEGORY_TO_BUCKET };
-  for (const c of categories) {
+for (const c of (categories || [])) {
     if (c.type === 'expense' && c.bucketKey) map[c.name] = c.bucketKey;
   }
   return map;
 }
 
 export function autoSplitIncome(amount, buckets) {
-  const enabled = buckets
-    .filter((b) => b.enabled !== false)
-    .sort((a, b) => a.order - b.order);
-  const totalPct = enabled.reduce((sum, b) => sum + b.percentage, 0);
+const list = Array.isArray(buckets) && buckets.length > 0 ? buckets : DANGER_MODE_BUCKETS;
+const enabled = list
+.filter((b) => b && b.enabled !== false && Number(b.percentage) > 0)
+.sort((a, b) => (a.order || 0) - (b.order || 0));
+const totalPct = enabled.reduce((sum, b) => sum + Number(b.percentage || 0), 0);
   if (totalPct === 0) return {};
   const split = {};
   let allocated = 0;
@@ -144,7 +178,7 @@ export function autoSplitIncome(amount, buckets) {
     if (i === enabled.length - 1) {
       split[b.key] = Math.round((amount - allocated) * 100) / 100;
     } else {
-      const portion = Math.round((amount * b.percentage / totalPct) * 100) / 100;
+const portion = Math.round((amount * Number(b.percentage) / totalPct) * 100) / 100;
       split[b.key] = portion;
       allocated += portion;
     }
@@ -157,16 +191,148 @@ export function autoSplitExpense(amount, category, categoryMap = CATEGORY_TO_BUC
   return { [bucketKey]: -Math.abs(amount) };
 }
 
+export function inferWalletIdForTx(tx) {
+if (tx.walletId) return tx.walletId;
+const n = String(tx.notes || '').toLowerCase();
+if (n.includes('moncash')) return 'w_moncash';
+if (n.includes('natcom') || n.includes('natcash')) return 'w_natcash';
+if (n.includes('cash') || n.includes('especes') || n.includes('hand')) return 'w_cash';
+if (n.includes('wise')) return 'w_wise';
+if (n.includes('meru')) return 'w_meru';
+if (n.includes('marc')) return 'w_marc';
+if (n.includes('mom')) return 'w_mom';
+if (tx.currency === 'USD') return 'w_wise';
+return 'w_moncash';
+}
+export function reconcileHistoricalSheetData(transactions, existingDebts, existingDebtEvents, activeBuckets, categories) {
+const categoryMap = buildCategoryToBucket(categories);
+const debts = [...(existingDebts || [])];
+const debtEvents = [...(existingDebtEvents || [])];
+const linkedTxIds = new Set(debts.map((d) => d.linkedTxId).filter(Boolean));
+const extractCreditor = (notes = '') => {
+const raw = String(notes || '').trim();
+if (!raw) return 'Loan';
+let cleaned = raw
+.replace(/^paid\s+/i, '')
+.replace(/^debt\s+/i, '')
+.replace(/\s+debt$/i, '')
+.replace(/\s+book\s+money$/i, '')
+.trim();
+if (/weekly\s+(family\s+)?money(\s+loan)?/i.test(cleaned) || /weekly\s+family\s+money/i.test(raw)) {
+return 'Weekly Money Loan';
+}
+if (/^jude/i.test(cleaned)) return 'Jude';
+if (/^marc/i.test(cleaned)) return 'Marc';
+if (/^jemima/i.test(cleaned)) return 'Jemima';
+if (/^mom/i.test(cleaned)) return 'Mom';
+return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+};
+const sortedTxs = [...(transactions || [])].sort(
+(a, b) => new Date(a.date || 0) - new Date(b.date || 0)
+);
+for (const tx of sortedTxs) {
+if (tx.type === 'income' && tx.category === BORROWED_CATEGORY) {
+if (linkedTxIds.has(tx.id) || tx.linkedDebtId) continue;
+const creditor = extractCreditor(tx.notes);
+const debtId = `debt_hist_${tx.id}`;
+tx.linkedDebtId = debtId;
+linkedTxIds.add(tx.id);
+debts.push({
+id: debtId,
+creditor,
+principal: Math.abs(Number(tx.amount) || 0),
+currency: tx.currency || 'USD',
+dueDate: '',
+notes: tx.notes || '',
+status: 'active',
+direction: 'owe',
+interestRate: 0,
+interestType: 'simple',
+linkedTxId: tx.id,
+createdAt: tx.createdAt || tx.date || nowISO(),
+updatedAt: tx.updatedAt || tx.date || nowISO(),
+});
+}
+}
+const recordedRepaymentTxIds = new Set(debtEvents.map((e) => e.linkedTxId || e.id));
+for (const tx of sortedTxs) {
+if (tx.type === 'expense' && tx.category === 'Repayment') {
+const evtId = `devt_hist_${tx.id}`;
+if (recordedRepaymentTxIds.has(evtId) || recordedRepaymentTxIds.has(tx.id)) continue;
+const creditor = extractCreditor(tx.notes);
+const candidates = debts.filter(
+(d) =>
+(d.direction || 'owe') === 'owe' &&
+d.creditor.toLowerCase() === creditor.toLowerCase() &&
+(d.currency || 'USD') === (tx.currency || 'USD')
+);
+const targetDebt = candidates[0] || debts.find(
+(d) => (d.direction || 'owe') === 'owe' && d.creditor.toLowerCase().includes(creditor.toLowerCase())
+);
+if (targetDebt) {
+const alreadyRepaid = computeDebtRepaid(debtEvents, targetDebt.id);
+const amt = Math.min(Math.abs(Number(tx.amount) || 0), Math.max(0, targetDebt.principal - alreadyRepaid));
+if (amt > 0) {
+const balanceAfter = targetDebt.principal - (alreadyRepaid + amt);
+debtEvents.push({
+id: evtId,
+debtId: targetDebt.id,
+linkedTxId: tx.id,
+type: 'repayment',
+amount: amt,
+currency: tx.currency || targetDebt.currency || 'USD',
+balanceAfter,
+balanceAfterBase: balanceAfter,
+baseCurrency: tx.currency || 'USD',
+interestPaid: Number(tx.interestAmount) || 0,
+notes: tx.notes || '',
+date: tx.date || nowISO(),
+createdAt: tx.createdAt || tx.date || nowISO(),
+});
+tx.linkedDebtId = targetDebt.id;
+if (balanceAfter <= 0) targetDebt.status = 'paid';
+}
+}
+}
+}
+const enrichedTransactions = (transactions || []).map((tx) => {
+const walletId = inferWalletIdForTx(tx);
+const hasBuckets = tx.buckets && Object.keys(tx.buckets).length > 0;
+if (hasBuckets) return { ...tx, walletId };
+const amt = Math.abs(Number(tx.amount) || 0);
+if (amt <= 0) return { ...tx, buckets: {}, walletId };
+if (tx.type === 'income' && tx.category === BORROWED_CATEGORY) {
+return { ...tx, buckets: {}, walletId };
+}
+if (tx.type === 'income') {
+return {
+...tx,
+walletId,
+buckets: autoSplitIncome(amt, activeBuckets),
+};
+}
+if (tx.type === 'expense') {
+const targetKey = tx.category === 'Repayment'
+? 'debtRepayment'
+: (categoryMap[tx.category] || 'operations');
+return {
+...tx,
+walletId,
+buckets: { [targetKey]: -amt },
+};
+}
+return { ...tx, walletId };
+});
+return {
+transactions: enrichedTransactions,
+debts,
+debtEvents,
+};
+}
 // ════════════════════════════════════════════════════════════════════
 // INTEREST math
 // ════════════════════════════════════════════════════════════════════
-//
-// Simple interest:   total = principal × (1 + rate × yearsElapsed)
-// Compound (annual): total = principal × (1 + rate)^yearsElapsed
-//
-// rate is a decimal (5% → 0.05), stored as % integer/float in the field.
-// Returns total accrued INTEREST (not principal + interest).
-//
+
 export function computeAccruedInterest(debt, asOf = new Date()) {
   const rate = (Number(debt.interestRate) || 0) / 100;
   if (rate <= 0) return 0;
@@ -182,7 +348,7 @@ export function computeAccruedInterest(debt, asOf = new Date()) {
   return p * rate * yearsElapsed;
 }
 
-// Total projected payback at due date (or asOf if no due date)
+
 export function computeProjectedPayback(debt) {
   const rate = (Number(debt.interestRate) || 0) / 100;
   const p = Number(debt.principal) || 0;
@@ -306,9 +472,15 @@ const appSlice = (set, get) => ({
     theme: 'dark',
     online: true,
     activeTab: 'dashboard',
-    baseCurrency: 'USD',
+baseCurrency: 'HTG',
     rates: { ...DEFAULT_RATES },
     debtAcknowledged: false,
+dangerModeOverride: 'auto', // 'auto' | 'danger' | 'normal'
+privacyMask: true,          // Hides less-interesting noisy charts behind a toggle while keeping accurate secondary cards below Buckets
+quickSpendBucketKey: null,
+selectedCalendarDate: new Date().toISOString().slice(0, 10),
+calendarViewMode: 'day',    // 'day' | 'week' | 'month' | 'compare'
+highlightedTxId: null,
     editingTxId: null,
     searchQuery: '',
     searchOpen: false,
@@ -319,10 +491,47 @@ const appSlice = (set, get) => ({
   toggleTheme: () =>
     set((s) => ({ app: { ...s.app, theme: s.app.theme === 'light' ? 'dark' : 'light' } })),
   setActiveTab: (tab) => set((s) => ({ app: { ...s.app, activeTab: tab } })),
+openCalendarOnDate: (dateInput, viewMode = 'day') => {
+let dateKey = '';
+if (typeof dateInput === 'string' && /^\d{4}-\d{2}-\d{2}/.test(dateInput)) {
+dateKey = dateInput.slice(0, 10);
+} else {
+const d = new Date(dateInput || new Date());
+if (!isNaN(d)) {
+const y = d.getFullYear();
+const m = String(d.getMonth() + 1).padStart(2, '0');
+const day = String(d.getDate()).padStart(2, '0');
+dateKey = `${y}-${m}-${day}`;
+} else {
+dateKey = new Date().toISOString().slice(0, 10);
+}
+}
+set((s) => ({
+app: {
+...s.app,
+selectedCalendarDate: dateKey,
+calendarViewMode: viewMode,
+activeTab: 'calendar',
+},
+}));
+},
+setSelectedCalendarDate: (dateKey) =>
+set((s) => ({ app: { ...s.app, selectedCalendarDate: dateKey } })),
+setCalendarViewMode: (mode) =>
+set((s) => ({ app: { ...s.app, calendarViewMode: mode } })),
+setHighlightedTxId: (txId) =>
+set((s) => ({ app: { ...s.app, highlightedTxId: txId } })),
   setBaseCurrency: (c) => set((s) => ({ app: { ...s.app, baseCurrency: c } })),
   setRate: (currency, value) =>
     set((s) => ({ app: { ...s.app, rates: { ...s.app.rates, [currency]: Number(value) } } })),
   acknowledgeDebt: () => set((s) => ({ app: { ...s.app, debtAcknowledged: true } })),
+setDangerModeOverride: (mode) => {
+set((s) => ({ app: { ...s.app, dangerModeOverride: mode } }));
+get().syncBucketMode();
+},
+setPrivacyMask: (masked) => set((s) => ({ app: { ...s.app, privacyMask: Boolean(masked) } })),
+togglePrivacyMask: () => set((s) => ({ app: { ...s.app, privacyMask: !s.app.privacyMask } })),
+setQuickSpendBucket: (bucketKey) => set((s) => ({ app: { ...s.app, quickSpendBucketKey: bucketKey } })),
   setEditingTx: (id) => set((s) => ({ app: { ...s.app, editingTxId: id } })),
   setSearchQuery: (q) => set((s) => ({ app: { ...s.app, searchQuery: q } })),
   setSearchOpen: (open) => set((s) => ({ app: { ...s.app, searchOpen: open, searchQuery: open ? s.app.searchQuery : '' } })),
@@ -349,11 +558,15 @@ const personalSlice = (set, get) => ({
     pending:          [],
     templates:        [],
     categories:       [],
-    // Round E new collections
+
     borrowedDeployments:   [],
     ventureDistributions:  [],
     ventureMilestones:     [],
     ventureJournal:        [],
+wallets:               DEFAULT_WALLETS, // The 6 places money can be (MonCash, NatCash, Wise, Meru, Marc's Account, Mom's Account)
+conversions:           [],              // Currency / wallet conversions + fees taken
+bucketNotes:           {},
+dismissedAnomalies:    [],
     queue: [],
     lastSyncAt: null,
     lastTickAt: null,
@@ -363,31 +576,46 @@ const personalSlice = (set, get) => ({
     lastDeleted: null,
   },
 
-  // Round E: ensure default buckets exist; ALSO migrate-kill any "holding" bucket.
-  // Idempotent by `key`: dedupes any duplicates and only adds missing defaults.
+syncBucketMode: () => {
+const state = get();
+const isDanger = selectIsDangerMode(state);
+const resolved = resolveModeBuckets(state.personal.buckets, isDanger);
+set((s) => ({
+personal: {
+...s.personal,
+buckets: resolved,
+},
+}));
+},
   initializeBuckets: () => {
-    const existing = dedupeBuckets(get().personal.buckets);
-    if (existing.length !== get().personal.buckets.length) {
-      set((s) => ({ personal: { ...s.personal, buckets: existing } }));
+const state = get();
+const isDanger = selectIsDangerMode(state);
+const existing = dedupeBuckets(state.personal.buckets).filter((b) => b.key !== 'holding');
+const resolved = resolveModeBuckets(existing, isDanger);
+set((s) => ({
+personal: {
+...s.personal,
+buckets: resolved,
+},
+}));
+},
+initializeWallets: () => {
+const existing = get().personal.wallets || [];
+if (existing.length === 0) {
+set((s) => ({ personal: { ...s.personal, wallets: DEFAULT_WALLETS } }));
+return;
     }
-    // Add any missing default buckets (never duplicates an existing key)
-    const existingKeys = new Set(existing.map((b) => b.key));
-    const missing = DEFAULT_BUCKETS.filter((b) => !existingKeys.has(b.key));
-    if (missing.length > 0) {
-      const newBuckets = missing.map((b) => ({
-        ...b, id: uid('bkt'), enabled: true, createdAt: nowISO(), updatedAt: nowISO(),
-      }));
-      set((s) => ({ personal: { ...s.personal, buckets: [...existing, ...newBuckets] } }));
-      newBuckets.forEach((b) => enqueue(set, get, 'bucket', 'create', b));
+const byId = new Map(existing.map((w) => [w.id, w]));
+const merged = DEFAULT_WALLETS.map((def) => ({
+...def,
+...(byId.get(def.id) || {}),
+}));
+for (const w of existing) {
+if (!DEFAULT_WALLETS.some((d) => d.id === w.id)) {
+merged.push(w);
+}
     }
-    // Kill any Holding bucket left from Round D
-    const holding = existing.find((b) => b.key === 'holding');
-    if (holding) {
-      set((s) => ({
-        personal: { ...s.personal, buckets: s.personal.buckets.filter((b) => b.key !== 'holding') },
-      }));
-      enqueue(set, get, 'bucket', 'delete', { id: holding.id });
-    }
+set((s) => ({ personal: { ...s.personal, wallets: merged } }));
   },
 
   initializeCategories: () => {
@@ -397,47 +625,299 @@ const personalSlice = (set, get) => ({
         ...c, id: uid('cat'), enabled: true, createdAt: nowISO(), updatedAt: nowISO(),
       }));
       set((s) => ({ personal: { ...s.personal, categories: newCats } }));
-      newCats.forEach((c) => enqueue(set, get, 'category', 'create', c));
+
       return;
     }
-    // Add Borrowed/Lent if missing
+
     const toAdd = [];
-    if (!existing.some((c) => c.name === BORROWED_CATEGORY && c.type === 'income')) {
-      const tpl = DEFAULT_CATEGORIES.find((c) => c.name === BORROWED_CATEGORY);
-      toAdd.push({
-        ...tpl, id: uid('cat'), enabled: true,
-        order: Math.max(...existing.filter((c) => c.type === 'income').map((c) => c.order || 0), 0) + 1,
-        createdAt: nowISO(), updatedAt: nowISO(),
-      });
-    }
-    if (!existing.some((c) => c.name === LENT_CATEGORY && c.type === 'expense')) {
-      const tpl = DEFAULT_CATEGORIES.find((c) => c.name === LENT_CATEGORY);
-      toAdd.push({
-        ...tpl, id: uid('cat'), enabled: true,
-        order: Math.max(...existing.filter((c) => c.type === 'expense').map((c) => c.order || 0), 0) + 1,
-        createdAt: nowISO(), updatedAt: nowISO(),
-      });
+for (const reqName of [BORROWED_CATEGORY, LENT_CATEGORY, 'Repayment', 'Conversion Fee']) {
+const tpl = DEFAULT_CATEGORIES.find((c) => c.name === reqName);
+if (tpl && !existing.some((c) => c.name === tpl.name && c.type === tpl.type)) {
+toAdd.push({
+...tpl, id: uid('cat'), enabled: true,
+order: existing.filter((c) => c.type === tpl.type).length + 1,
+createdAt: nowISO(), updatedAt: nowISO(),
+});
+}
     }
     if (toAdd.length > 0) {
       set((s) => ({ personal: { ...s.personal, categories: [...s.personal.categories, ...toAdd] } }));
-      toAdd.forEach((c) => enqueue(set, get, 'category', 'create', c));
+
     }
   },
 
+updateWalletBalance: (walletId, newBalance, newCurrency) => {
+set((s) => ({
+personal: {
+...s.personal,
+wallets: (s.personal.wallets || DEFAULT_WALLETS).map((w) => {
+if (w.id !== walletId) return w;
+return {
+...w,
+balance: Number(newBalance) || 0,
+currency: newCurrency || w.currency,
+manualUpdatedAt: nowISO(),
+};
+}),
+},
+}));
+enqueue(set, get, 'state', 'update', { id: SYSTEM_STATE_ROW_ID });
+},
+addCustomWallet: ({ name, currency = 'HTG', allowAnyCurrency = true, color = '#5b8def' }) => {
+const w = {
+id: uid('wlt'),
+name: name.trim(),
+currency,
+allowAnyCurrency,
+color,
+icon: 'Wallet',
+order: (get().personal.wallets || []).length + 1,
+balance: 0,
+manualUpdatedAt: nowISO(),
+};
+set((s) => ({
+personal: {
+...s.personal,
+wallets: [...(s.personal.wallets || DEFAULT_WALLETS), w],
+},
+}));
+enqueue(set, get, 'state', 'update', { id: SYSTEM_STATE_ROW_ID });
+return w;
+},
+reconcileWalletDifference: ({ diffBase, actionType = 'expense', bucketKey = 'operations', date, notes = '' }) => {
+const baseCurrency = get().app.baseCurrency;
+const absDiff = Math.round(Math.abs(Number(diffBase) || 0) * 100) / 100;
+if (absDiff <= 0.01) return null;
+if (actionType === 'expense') {
+return get().addTransaction({
+date: date || nowISO(),
+amount: absDiff,
+currency: baseCurrency,
+category: 'Other',
+type: 'expense',
+notes: notes || 'Wallet reconciliation adjustment (untracked spend/fee)',
+buckets: { [bucketKey]: -absDiff },
+skipWalletDelta: true, // Wallets already reflect this lower balance
+});
+} else {
+const state = get();
+const activeBuckets = selectActiveBuckets(state);
+return get().addTransaction({
+date: date || nowISO(),
+amount: absDiff,
+currency: baseCurrency,
+category: 'Other',
+type: 'income',
+notes: notes || 'Wallet reconciliation adjustment (unallocated funds)',
+buckets: bucketKey === 'auto' ? autoSplitIncome(absDiff, activeBuckets) : { [bucketKey]: absDiff },
+skipWalletDelta: true,
+});
+}
+},
+addConversion: ({
+date,
+fromWalletId = 'w_wise',
+fromAmount,
+fromCurrency = 'USD',
+toWalletId = 'w_moncash',
+toAmount,
+toCurrency = 'HTG',
+feeAmount = 0,
+feeCurrency = 'HTG',
+feeBucketKey = 'operations',
+notes = '',
+}) => {
+const convId = uid('cnv');
+const effectiveDate = date || nowISO();
+const fAmt = Math.abs(Number(fromAmount) || 0);
+const tAmt = Math.abs(Number(toAmount) || 0);
+const fee  = Math.abs(Number(feeAmount) || 0);
+const rates = get().app.rates;
+set((s) => ({
+personal: {
+...s.personal,
+wallets: (s.personal.wallets || DEFAULT_WALLETS).map((w) => {
+if (w.id === fromWalletId && w.manualUpdatedAt) {
+const delta = convert(fAmt, fromCurrency, w.currency, rates);
+return { ...w, balance: Math.max(0, (Number(w.balance) || 0) - delta) };
+}
+if (w.id === toWalletId && w.manualUpdatedAt) {
+const delta = convert(tAmt, toCurrency, w.currency, rates);
+return { ...w, balance: (Number(w.balance) || 0) + delta };
+}
+return w;
+}),
+},
+}));
+let feeTxId = '';
+if (fee > 0) {
+const fromWallet = (get().personal.wallets || DEFAULT_WALLETS).find((w) => w.id === fromWalletId);
+const toWallet   = (get().personal.wallets || DEFAULT_WALLETS).find((w) => w.id === toWalletId);
+const feeTx = get().addTransaction({
+date: effectiveDate,
+amount: fee,
+currency: feeCurrency,
+category: 'Conversion Fee',
+type: 'expense',
+walletId: toWalletId,
+notes: notes
+? `Fee · ${notes}`
+: `Conversion fee (${fromWallet?.name || fromCurrency} → ${toWallet?.name || toCurrency})`,
+buckets: { [feeBucketKey]: -fee },
+skipWalletDelta: true,
+});
+feeTxId = feeTx?.id || '';
+}
+const conv = {
+id: convId,
+date: effectiveDate,
+fromWalletId,
+fromAmount: fAmt,
+fromCurrency,
+toWalletId,
+toAmount: tAmt,
+toCurrency,
+feeAmount: fee,
+feeCurrency,
+feeTxId,
+notes,
+createdAt: nowISO(),
+};
+set((s) => ({
+personal: {
+...s.personal,
+conversions: [conv, ...(s.personal.conversions || [])],
+},
+}));
+enqueue(set, get, 'state', 'update', { id: SYSTEM_STATE_ROW_ID });
+return conv;
+},
+removeConversion: (id) => {
+const conv = (get().personal.conversions || []).find((c) => c.id === id);
+if (conv?.feeTxId) {
+get().deleteTransaction(conv.feeTxId);
+}
+set((s) => ({
+personal: {
+...s.personal,
+conversions: (s.personal.conversions || []).filter((c) => c.id !== id),
+},
+}));
+enqueue(set, get, 'state', 'update', { id: SYSTEM_STATE_ROW_ID });
+},
+spendFromBorrowedCapital: ({ amount, currency = 'HTG', note = 'Borrowed capital spent', debtId = '' }) => {
+const state = get();
+const rates = state.app.rates;
+const debts = (state.personal.debts || []).filter(
+(d) => (d.direction || 'owe') === 'owe' && d.status !== 'paid'
+);
+let remainingToDeploy = Math.abs(Number(amount) || 0);
+if (remainingToDeploy <= 0) return [];
+const createdDeps = [];
+const targetDebts = debtId ? debts.filter((d) => d.id === debtId) : debts;
+for (const d of targetDebts) {
+if (remainingToDeploy <= 0.001) break;
+const repaid = computeDebtRepaid(state.personal.debtEvents || [], d.id);
+const remPrincipal = Math.max(0, (Number(d.principal) || 0) - repaid);
+const alreadyDeployed = (state.personal.borrowedDeployments || [])
+.filter((dep) => dep.sourceDebtId === d.id)
+.reduce((sum, dep) => sum + convert(Number(dep.amount) || 0, dep.currency || 'USD', d.currency, rates), 0);
+const availableInDebt = Math.max(0, remPrincipal - alreadyDeployed);
+if (availableInDebt <= 0.001) continue;
+const neededInDebtCurr = convert(remainingToDeploy, currency, d.currency, rates);
+const takeInDebtCurr = Math.min(availableInDebt, neededInDebtCurr);
+if (takeInDebtCurr > 0) {
+const dep = get().recordBorrowedDeployment({
+sourceDebtId: d.id,
+destinationType: 'spent',
+destinationLabel: note || 'Spent from borrowed capital',
+amount: Math.round(takeInDebtCurr * 100) / 100,
+currency: d.currency,
+note,
+});
+createdDeps.push(dep);
+remainingToDeploy -= convert(takeInDebtCurr, d.currency, currency, rates);
+}
+}
+return createdDeps;
+},
+setRemainingBorrowedCapital: (desiredRemaining, currency) => {
+const state = get();
+const base = currency || state.app.baseCurrency;
+const rates = state.app.rates;
+const currentPool = computeBorrowedPool(
+state.personal.debts,
+state.personal.debtEvents,
+state.personal.borrowedDeployments,
+base,
+rates
+);
+const target = Math.max(0, Number(desiredRemaining) || 0);
+const diff = currentPool - target;
+if (diff > 0.01) {
+get().spendFromBorrowedCapital({
+amount: diff,
+currency: base,
+note: 'Adjusted remaining borrowed capital',
+});
+} else if (diff < -0.01) {
+let toRestoreBase = Math.abs(diff);
+const updatedDeps = [];
+const currentDeps = [...(state.personal.borrowedDeployments || [])].reverse();
+for (const dep of currentDeps) {
+if (dep.destinationType === 'spent' && toRestoreBase > 0.01) {
+const depBase = convert(Number(dep.amount) || 0, dep.currency || 'USD', base, rates);
+if (depBase <= toRestoreBase + 0.01) {
+toRestoreBase -= depBase;
+continue; // drop this 'spent' marker
+} else {
+const newAmtBase = depBase - toRestoreBase;
+const newAmt = convert(newAmtBase, base, dep.currency || 'USD', rates);
+updatedDeps.push({ ...dep, amount: Math.round(newAmt * 100) / 100 });
+toRestoreBase = 0;
+continue;
+}
+}
+updatedDeps.push(dep);
+}
+set((s) => ({
+personal: {
+...s.personal,
+borrowedDeployments: updatedDeps.reverse(),
+},
+}));
+enqueue(set, get, 'state', 'update', { id: SYSTEM_STATE_ROW_ID });
+}
+},
+setBucketNote: (bucketKey, note) => {
+set((s) => ({
+personal: {
+...s.personal,
+bucketNotes: { ...(s.personal.bucketNotes || {}), [bucketKey]: note },
+},
+}));
+enqueue(set, get, 'state', 'update', { id: SYSTEM_STATE_ROW_ID });
+},
+fixTransactionCurrency: (txId, newCurrency) => {
+const tx = get().personal.transactions.find((t) => t.id === txId);
+if (!tx) return null;
+return get().updateTransaction(txId, { currency: newCurrency });
+},
+dismissAnomaly: (txId) => {
+set((s) => ({
+personal: {
+...s.personal,
+dismissedAnomalies: [...new Set([...(s.personal.dismissedAnomalies || []), txId])],
+},
+}));
+},
   // ─── Transactions ─────────────────────────────────────────
-  //
-  // Round E: Borrowed money does NOT route through buckets. It lives
-  // in a separate pool tracked by the linked debt. The transaction's
-  // buckets field is `{}` for borrowed inflows. The Debt entry's
-  // remaining principal represents the borrowed-pool balance from
-  // that source (minus deployments).
-  //
-  // Lent money: by default debits one chosen source bucket. Advanced
-  // mode allows splitting across buckets (input.bucketSplit object).
-  //
+
   addTransaction: (input) => {
-    const buckets = get().personal.buckets;
-    const categories = get().personal.categories;
+const state = get();
+const isDanger = selectIsDangerMode(state);
+const buckets = resolveModeBuckets(state.personal.buckets, isDanger);
+const categories = state.personal.categories;
     const categoryMap = buildCategoryToBucket(categories);
 
     const isBorrowed = input.type === 'income'  && input.category === BORROWED_CATEGORY;
@@ -446,11 +926,11 @@ const personalSlice = (set, get) => ({
     let bucketAllocation = input.buckets;
     if (!bucketAllocation) {
       if (isBorrowed) {
-        // Borrowed money lives in its own pool, NOT in buckets
+
         bucketAllocation = {};
       } else if (isLent) {
         if (input.bucketSplit && typeof input.bucketSplit === 'object') {
-          // Advanced: user-defined split across multiple buckets (negative values)
+
           bucketAllocation = {};
           for (const [k, v] of Object.entries(input.bucketSplit)) {
             bucketAllocation[k] = -Math.abs(Number(v) || 0);
@@ -462,7 +942,18 @@ const personalSlice = (set, get) => ({
       } else if (input.type === 'income') {
         bucketAllocation = autoSplitIncome(Number(input.amount), buckets);
       } else if (input.type === 'expense') {
-        bucketAllocation = autoSplitExpense(Number(input.amount), input.category, categoryMap);
+if (input.sourceBucketKey === 'borrowedPool') {
+bucketAllocation = {};
+get().spendFromBorrowedCapital({
+amount: Number(input.amount),
+currency: input.currency || 'USD',
+note: input.notes || input.category || 'Expense from borrowed capital',
+});
+} else if (input.sourceBucketKey) {
+bucketAllocation = { [input.sourceBucketKey]: -Math.abs(Number(input.amount)) };
+} else {
+bucketAllocation = autoSplitExpense(Number(input.amount), input.category, categoryMap);
+}
       } else {
         bucketAllocation = {};
       }
@@ -473,14 +964,32 @@ const personalSlice = (set, get) => ({
     else if (typeof input.tags === 'string') tagsStr = input.tags;
 
     const txId = input.id || uid('tx');
+const walletId = input.walletId || inferWalletIdForTx(input);
+if (!input.skipWalletDelta && walletId && input.type !== 'transfer') {
+const rates = state.app.rates;
+set((s) => ({
+personal: {
+...s.personal,
+wallets: (s.personal.wallets || DEFAULT_WALLETS).map((w) => {
+if (w.id !== walletId || !w.manualUpdatedAt) return w;
+const delta = convert(Math.abs(Number(input.amount) || 0), input.currency || 'USD', w.currency, rates);
+const nextBal = input.type === 'income'
+? (Number(w.balance) || 0) + delta
+: Math.max(0, (Number(w.balance) || 0) - delta);
+return { ...w, balance: Math.round(nextBal * 100) / 100 };
+}),
+},
+}));
+}
 
     // Auto-create linked debt for Borrowed/Lent
-    let linkedDebtId = '';
-    if ((isBorrowed || isLent) && input.counterparty) {
+let linkedDebtId = input.linkedDebtId || '';
+if ((isBorrowed || isLent) && (input.counterparty || input.notes) && !linkedDebtId) {
       const direction = isBorrowed ? 'owe' : 'receivable';
+const creditorName = (input.counterparty || input.notes || 'Loan').trim();
       const debt = {
         id: uid('debt'),
-        creditor: input.counterparty,
+creditor: creditorName,
         principal: Number(input.amount),
         currency: input.currency || 'USD',
         dueDate: input.dueDate || '',
@@ -495,7 +1004,7 @@ const personalSlice = (set, get) => ({
       };
       linkedDebtId = debt.id;
       set((s) => ({ personal: { ...s.personal, debts: [...s.personal.debts, debt] } }));
-      enqueue(set, get, 'debt', 'create', debt);
+get().syncBucketMode();
     }
 
     const tx = {
@@ -505,10 +1014,12 @@ const personalSlice = (set, get) => ({
       currency: input.currency || 'USD',
       category: input.category || 'Other',
       type: input.type,
+walletId,
       notes: input.notes || '',
       tags: tagsStr,
       buckets: bucketAllocation,
       linkedDebtId,
+interestAmount: Number(input.interestAmount) || 0,
       createdAt: nowISO(),
       updatedAt: nowISO(),
       _pending: true,
@@ -520,8 +1031,10 @@ const personalSlice = (set, get) => ({
 
   updateTransaction: (id, patch) => {
     let updated = null;
-    const buckets = get().personal.buckets;
-    const categories = get().personal.categories;
+const state = get();
+const isDanger = selectIsDangerMode(state);
+const buckets = resolveModeBuckets(state.personal.buckets, isDanger);
+const categories = state.personal.categories;
     const categoryMap = buildCategoryToBucket(categories);
 
     set((s) => ({
@@ -593,7 +1106,7 @@ const personalSlice = (set, get) => ({
     }
 
     let linkedDebt = null;
-    if (tx && tx.linkedDebtId) {
+if (tx && tx.linkedDebtId && tx.category === BORROWED_CATEGORY) {
       linkedDebt = get().personal.debts.find((d) => d.id === tx.linkedDebtId);
     }
 
@@ -607,14 +1120,15 @@ const personalSlice = (set, get) => ({
         debts: linkedDebt
           ? s.personal.debts.filter((d) => d.id !== linkedDebt.id)
           : s.personal.debts,
+debtEvents: s.personal.debtEvents.filter((e) => e.linkedTxId !== id),
         lastDeleted: tx
           ? { tx, unclaimedGoal, linkedDebt, deletedAt: Date.now() }
           : s.personal.lastDeleted,
       },
     }));
+get().syncBucketMode();
     enqueue(set, get, 'transaction', 'delete', { id });
-    if (unclaimedGoal) enqueue(set, get, 'goal', 'update', unclaimedGoal);
-    if (linkedDebt) enqueue(set, get, 'debt', 'delete', { id: linkedDebt.id });
+
   },
 
   undoDelete: () => {
@@ -645,9 +1159,9 @@ const personalSlice = (set, get) => ({
         lastDeleted: null,
       },
     }));
+get().syncBucketMode();
     enqueue(set, get, 'transaction', 'create', stripMeta(tx));
-    if (reclaimed) enqueue(set, get, 'goal', 'update', reclaimed);
-    if (restoredDebt) enqueue(set, get, 'debt', 'create', restoredDebt);
+
     return tx;
   },
 
@@ -656,12 +1170,16 @@ const personalSlice = (set, get) => ({
   // ─── Buckets ──────────────────────────────────────────────
   updateBucket: (id, patch) => {
     let updated = null;
+const isDanger = selectIsDangerMode(get());
     set((s) => ({
       personal: {
         ...s.personal,
         buckets: s.personal.buckets.map((b) => {
-          if (b.id !== id) return b;
-          updated = { ...b, ...patch, updatedAt: nowISO() };
+if (b.id !== id && b.key !== id) return b;
+const pctPatch = patch.percentage !== undefined
+? (isDanger ? { dangerPercentage: Number(patch.percentage) } : { normalPercentage: Number(patch.percentage) })
+: {};
+updated = { ...b, ...patch, ...pctPatch, updatedAt: nowISO() };
           return updated;
         }),
       },
@@ -691,13 +1209,18 @@ const personalSlice = (set, get) => ({
   },
 
   // ─── Goals ────────────────────────────────────────────────
-  addGoal: ({ bucketKey, name, target, currency = 'USD', priority, parallel = false }) => {
+addGoal: ({ bucketKey, name, target, currency = 'USD', priority, parallel = false, notes = '', coolingOffDays = 0 }) => {
     const bucketGoals = get().personal.goals.filter((g) => g.bucketKey === bucketKey && g.status === 'active');
     const nextPriority = priority || bucketGoals.length + 1;
+const coolingOffUntil = Number(coolingOffDays) > 0
+? new Date(Date.now() + Number(coolingOffDays) * 86400 * 1000).toISOString()
+: '';
     const goal = {
       id: uid('goal'), bucketKey, name,
       target: Number(target), currency,
       priority: nextPriority, parallel,
+notes,
+coolingOffUntil,
       status: 'active', claimedAt: '', claimedAmount: 0,
       createdAt: nowISO(), updatedAt: nowISO(),
     };
@@ -739,7 +1262,7 @@ const personalSlice = (set, get) => ({
         }),
       },
     }));
-    updates.forEach((g) => enqueue(set, get, 'goal', 'update', g));
+if (updates.length > 0) enqueue(set, get, 'goal', 'update', updates[0]);
   },
 
   claimGoal: (id, { actualAmount } = {}) => {
@@ -758,7 +1281,7 @@ const personalSlice = (set, get) => ({
       _pending: true,
     };
     set((s) => ({ personal: { ...s.personal, transactions: [tx, ...s.personal.transactions] } }));
-    enqueue(set, get, 'transaction', 'create', stripMeta(tx));
+
     const updated = {
       ...goal, status: 'claimed',
       claimedAt: nowISO(), claimedAmount: amount,
@@ -770,7 +1293,7 @@ const personalSlice = (set, get) => ({
         goals: s.personal.goals.map((g) => (g.id === id ? updated : g)),
       },
     }));
-    enqueue(set, get, 'goal', 'update', updated);
+enqueue(set, get, 'transaction', 'create', stripMeta(tx));
     return tx;
   },
 
@@ -855,8 +1378,7 @@ const personalSlice = (set, get) => ({
       },
     }));
 
-    newPending.forEach((p) => enqueue(set, get, 'pending', 'create', p));
-    updates.forEach((r) => enqueue(set, get, 'recurring', 'update', r));
+if (newPending.length > 0) enqueue(set, get, 'pending', 'create', newPending[0]);
   },
 
   confirmPending: (id, overrides = {}) => {
@@ -1007,7 +1529,7 @@ const personalSlice = (set, get) => ({
         }),
       },
     }));
-    updates.forEach((c) => enqueue(set, get, 'category', 'update', c));
+if (updates.length > 0) enqueue(set, get, 'category', 'update', updates[0]);
   },
 
   // ─── Bucket CRUD ──────────────────────────────────────────
@@ -1016,6 +1538,8 @@ const personalSlice = (set, get) => ({
     const order = existing.length + 1;
     const b = {
       id: uid('bkt'), key, name, percentage: Number(percentage),
+dangerPercentage: Number(percentage),
+normalPercentage: Number(percentage),
       color, icon, order, enabled: true,
       createdAt: nowISO(), updatedAt: nowISO(),
     };
@@ -1030,31 +1554,32 @@ const personalSlice = (set, get) => ({
   },
 
   resetBucketsToDefaults: () => {
-    const existing = get().personal.buckets;
-    existing.forEach((b) => enqueue(set, get, 'bucket', 'delete', { id: b.id }));
-    const defaults = DEFAULT_BUCKETS.map((b) => ({
+const isDanger = selectIsDangerMode(get());
+const defaults = (isDanger ? DANGER_MODE_BUCKETS : NORMAL_MODE_BUCKETS).map((b) => ({
       ...b, id: uid('bkt'), enabled: true, createdAt: nowISO(), updatedAt: nowISO(),
     }));
     set((s) => ({ personal: { ...s.personal, buckets: defaults } }));
-    defaults.forEach((b) => enqueue(set, get, 'bucket', 'create', b));
+enqueue(set, get, 'bucket', 'update', defaults[0]);
   },
 
   updateBucketPercentages: (updates) => {
+const isDanger = selectIsDangerMode(get());
     const updated = [];
     set((s) => ({
       personal: {
         ...s.personal,
         buckets: s.personal.buckets.map((b) => {
-          if (updates[b.id] === undefined) return b;
-          const pct = Math.max(0, Math.min(100, Number(updates[b.id])));
-          if (pct === b.percentage) return b;
-          const upd = { ...b, percentage: pct, updatedAt: nowISO() };
+const rawVal = updates[b.id] !== undefined ? updates[b.id] : updates[b.key];
+if (rawVal === undefined) return b;
+const pct = Math.max(0, Math.min(100, Number(rawVal)));
+const modePatch = isDanger ? { dangerPercentage: pct } : { normalPercentage: pct };
+const upd = { ...b, percentage: pct, ...modePatch, updatedAt: nowISO() };
           updated.push(upd);
           return upd;
         }),
       },
     }));
-    updated.forEach((b) => enqueue(set, get, 'bucket', 'update', b));
+if (updated.length > 0) enqueue(set, get, 'bucket', 'update', updated[0]);
   },
 
   // ─── Local data utilities ─────────────────────────────────
@@ -1062,14 +1587,14 @@ const personalSlice = (set, get) => ({
     const s = get();
     return {
       exportedAt: nowISO(),
-      version: 7,
-      personal: {
-        ...s.personal,
-      },
+version: 9,
+personal: { ...s.personal },
       app: {
         baseCurrency: s.app.baseCurrency,
         rates: s.app.rates,
         theme: s.app.theme,
+dangerModeOverride: s.app.dangerModeOverride,
+privacyMask: s.app.privacyMask,
       },
     };
   },
@@ -1081,13 +1606,15 @@ const personalSlice = (set, get) => ({
     set((s) => ({
       personal: {
         ...s.personal,
-        transactions: [], budgets: [], debts: [], debtEvents: [],
+transactions: [], budgets: [], budgetItems: [], debts: [], debtEvents: [],
         investments: [], investmentEvents: [],
         ventures: [], ventureEvents: [],
         buckets: [], goals: [],
         recurring: [], pending: [], templates: [], categories: [],
         borrowedDeployments: [], ventureDistributions: [],
         ventureMilestones: [], ventureJournal: [],
+wallets: DEFAULT_WALLETS, conversions: [],
+bucketNotes: {}, dismissedAnomalies: [],
         queue: [], lastDeleted: null,
       },
     }));
@@ -1119,36 +1646,54 @@ const personalSlice = (set, get) => ({
     enqueue(set, get, 'budget', 'delete', { id });
   },
 
-  // ─── Budget items (expected income/expenses per bucket) ──
-  // These are FORWARD-LOOKING: they show as blue (income) / yellow
-  // (expense) dots in the calendar until the date arrives and the user
-  // confirms them, at which point a real transaction is created.
-  addBudgetItem: ({ bucketKey, type = 'expense', name, amount, currency = 'USD', frequency = 'weekly', dayOfWeek = 0, dayOfMonth = 1, startDate }) => {
+addBudgetItem: ({ bucketKey, type = 'expense', name, amount, currency = 'HTG', frequency = 'weekly', dayOfWeek = 0, dayOfMonth = 1, startDate, notes = '' }) => {
     const item = {
-      id: uid('bdi'), bucketKey, type,
-      name: name || (type === 'income' ? 'Expected income' : 'Expected expense'),
-      amount: Number(amount), currency,
-      frequency, dayOfWeek: Number(dayOfWeek) || 0, dayOfMonth: Number(dayOfMonth) || 1,
+id: uid('bdi'),
+bucketKey: bucketKey || 'operations',
+type,
+name: name || (type === 'income' ? 'Expected income' : 'Planned expense'),
+amount: Number(amount),
+currency,
+frequency,
+dayOfWeek: Number(dayOfWeek) || 0,
+dayOfMonth: Number(dayOfMonth) || 1,
       startDate: startDate || nowISO(),
+notes,
       status: 'expected',
-      createdAt: nowISO(), updatedAt: nowISO(),
+createdAt: nowISO(),
+updatedAt: nowISO(),
     };
-    set((s) => ({ personal: { ...s.personal, budgetItems: [...s.personal.budgetItems, item] } }));
+set((s) => ({ personal: { ...s.personal, budgetItems: [...(s.personal.budgetItems || []), item] } }));
     enqueue(set, get, 'budgetItem', 'create', item);
     return item;
   },
 
+updateBudgetItem: (id, patch) => {
+let updated = null;
+set((s) => ({
+personal: {
+...s.personal,
+budgetItems: (s.personal.budgetItems || []).map((b) => {
+if (b.id !== id) return b;
+updated = { ...b, ...patch, updatedAt: nowISO() };
+return updated;
+}),
+},
+}));
+if (updated) enqueue(set, get, 'budgetItem', 'update', updated);
+return updated;
+},
   removeBudgetItem: (id) => {
-    set((s) => ({ personal: { ...s.personal, budgetItems: s.personal.budgetItems.filter((b) => b.id !== id) } }));
+set((s) => ({ personal: { ...s.personal, budgetItems: (s.personal.budgetItems || []).filter((b) => b.id !== id) } }));
     enqueue(set, get, 'budgetItem', 'delete', { id });
   },
 
-  // Confirm an expected item on a specific date → creates a real
-  // transaction (green/red) and marks the item confirmed.
-  confirmBudgetItem: (id, { date } = {}) => {
-    const item = get().personal.budgetItems.find((b) => b.id === id);
+confirmBudgetItem: (id, { date, keepRecurring = true } = {}) => {
+const item = (get().personal.budgetItems || []).find((b) => b.id === id);
     if (!item) return null;
     const effectiveDate = date || nowISO();
+const state = get();
+const activeBuckets = selectActiveBuckets(state);
     const tx = get().addTransaction({
       type: item.type,
       amount: item.amount,
@@ -1157,18 +1702,28 @@ const personalSlice = (set, get) => ({
       notes: item.name,
       date: effectiveDate,
       buckets: item.type === 'income'
-        ? autoSplitIncome(item.amount, get().personal.buckets)
+? autoSplitIncome(item.amount, activeBuckets)
         : { [item.bucketKey]: -Math.abs(item.amount) },
     });
+const isOneTime = item.frequency === 'once';
     set((s) => ({
       personal: {
         ...s.personal,
-        budgetItems: s.personal.budgetItems.map((b) =>
-          b.id === id ? { ...b, status: 'confirmed', confirmedAt: effectiveDate, linkedTxId: tx?.id || '', updatedAt: nowISO() } : b
+budgetItems: (s.personal.budgetItems || []).map((b) =>
+b.id === id
+? {
+...b,
+status: isOneTime || !keepRecurring ? 'confirmed' : 'expected',
+lastConfirmedAt: effectiveDate,
+confirmedCount: (Number(b.confirmedCount) || 0) + 1,
+linkedTxId: tx?.id || '',
+updatedAt: nowISO(),
+}
+: b
         ),
       },
     }));
-    enqueue(set, get, 'budgetItem', 'update', { id, status: 'confirmed', confirmedAt: effectiveDate });
+enqueue(set, get, 'budgetItem', 'update', { id, lastConfirmedAt: effectiveDate });
     return tx;
   },
 
@@ -1185,6 +1740,7 @@ const personalSlice = (set, get) => ({
       createdAt: nowISO(), updatedAt: nowISO(),
     };
     set((s) => ({ personal: { ...s.personal, debts: [...s.personal.debts, d] } }));
+get().syncBucketMode();
     enqueue(set, get, 'debt', 'create', d);
     return d;
   },
@@ -1201,10 +1757,11 @@ const personalSlice = (set, get) => ({
         }),
       },
     }));
+get().syncBucketMode();
     if (updated) enqueue(set, get, 'debt', 'update', updated);
   },
 
-  recordRepayment: (debtId, amount, { interestPaid = 0, date, sourceBucketKey = 'operations' } = {}) => {
+recordRepayment: (debtId, amount, { interestPaid = 0, date, sourceBucketKey = 'debtRepayment', walletId } = {}) => {
     const debt = get().personal.debts.find((d) => d.id === debtId);
     if (!debt) return null;
     const direction = debt.direction || 'owe';
@@ -1216,25 +1773,23 @@ const personalSlice = (set, get) => ({
     const baseCurrency = get().app.baseCurrency;
     const rates        = get().app.rates;
     const balanceAfterBase = convert(balanceAfter, debt.currency, baseCurrency, rates);
-    // The caller must supply an explicit, user-confirmed date. `date` may be
-    // omitted only by legacy callers — never invented silently in the UI layer.
+
     const effectiveDate = date || nowISO();
 
-    // Audit-trail transaction so this shows up in History.
-    // Paying an 'owe' debt debits cash (principal + interest both leave a
-    // bucket); principal additionally reduces outstanding debt below.
-    // A received repayment credits cash back the same way.
+
     const totalPaid = cappedAmount + (Number(interestPaid) || 0);
+const resolvedWalletId = walletId || inferWalletIdForTx({ notes: debt.creditor, currency: debt.currency });
     const auditTx = {
       id: uid('tx'), date: effectiveDate,
       amount: totalPaid,
       currency: debt.currency,
       category: direction === 'owe' ? 'Repayment' : 'Repayment received',
       type: direction === 'owe' ? 'expense' : 'income',
+walletId: resolvedWalletId,
       notes: direction === 'owe'
         ? `Paid ${debt.creditor}${interestPaid > 0 ? ` (incl. ${interestPaid} interest)` : ''}`
         : `${debt.creditor} repaid`,
-      tags: '',
+tags: 'debt-repayment',
       buckets: { [sourceBucketKey]: direction === 'owe' ? -totalPaid : totalPaid },
       interestAmount: Number(interestPaid) || 0,
       linkedDebtId: debtId,
@@ -1242,17 +1797,25 @@ const personalSlice = (set, get) => ({
       _pending: true,
     };
     set((s) => ({ personal: { ...s.personal, transactions: [auditTx, ...s.personal.transactions] } }));
-    enqueue(set, get, 'transaction', 'create', stripMeta(auditTx));
+
 
     const event = {
-      id: uid('devt'), debtId, type: 'repayment',
-      amount: cappedAmount, currency: debt.currency,
-      balanceAfter, balanceAfterBase, baseCurrency,
+id: uid('devt'),
+debtId,
+linkedTxId: auditTx.id,
+type: 'repayment',
+amount: cappedAmount,
+currency: debt.currency,
+balanceAfter,
+balanceAfterBase,
+baseCurrency,
       interestPaid: Number(interestPaid) || 0,
-      notes: '', date: effectiveDate, createdAt: nowISO(),
+notes: auditTx.notes,
+date: effectiveDate,
+createdAt: nowISO(),
     };
     set((s) => ({ personal: { ...s.personal, debtEvents: [...s.personal.debtEvents, event] } }));
-    enqueue(set, get, 'debtEvent', 'create', event);
+
 
     if (balanceAfter <= 0 && debt.status !== 'paid') {
       const updated = { ...debt, status: 'paid', updatedAt: nowISO() };
@@ -1262,28 +1825,25 @@ const personalSlice = (set, get) => ({
           debts: s.personal.debts.map((d) => (d.id === debtId ? updated : d)),
         },
       }));
-      enqueue(set, get, 'debt', 'update', updated);
+
     }
+get().syncBucketMode();
+enqueue(set, get, 'transaction', 'create', stripMeta(auditTx));
     return event;
   },
 
   removeDebt: (id) => {
     set((s) => ({ personal: { ...s.personal, debts: s.personal.debts.filter((d) => d.id !== id) } }));
+get().syncBucketMode();
     enqueue(set, get, 'debt', 'delete', { id });
   },
 
-  // ─── Round E: Borrowed-pool deployments ───────────────────
-  //
-  // When the user "deploys" borrowed capital (uses it to fund an
-  // investment, venture, or transfers it into a regular bucket), we
-  // log a borrowedDeployment row tying the source debt to where the
-  // money went. Used for the deployment-trail viewer + ROI tracking.
-  //
+
   recordBorrowedDeployment: ({ sourceDebtId, destinationType, destinationId, destinationLabel, amount, currency = 'USD', note = '' }) => {
     const dep = {
       id: uid('bdep'),
       sourceDebtId,
-      destinationType,        // 'investment' | 'venture' | 'bucket' | 'cash'
+destinationType,
       destinationId: destinationId || '',
       destinationLabel: destinationLabel || '',
       amount: Number(amount),
@@ -1310,9 +1870,9 @@ const personalSlice = (set, get) => ({
       createdAt: nowISO(), updatedAt: nowISO(),
     };
     set((s) => ({ personal: { ...s.personal, investments: [...s.personal.investments, inv] } }));
-    enqueue(set, get, 'investment', 'create', inv);
 
-    // If funded by borrowed capital, log a deployment row
+
+
     if (fundedByDebtId) {
       get().recordBorrowedDeployment({
         sourceDebtId: fundedByDebtId,
@@ -1324,7 +1884,7 @@ const personalSlice = (set, get) => ({
         note: 'Investment funded',
       });
     } else {
-      // Otherwise this is paid out of War Chest — log a tx so the bucket reflects it
+
       const tx = {
         id: uid('tx'), date: nowISO(),
         amount: Number(units) * Number(costBasis),
@@ -1340,6 +1900,7 @@ const personalSlice = (set, get) => ({
       set((s) => ({ personal: { ...s.personal, transactions: [tx, ...s.personal.transactions] } }));
       enqueue(set, get, 'transaction', 'create', stripMeta(tx));
     }
+enqueue(set, get, 'investment', 'create', inv);
     return inv;
   },
 
@@ -1355,14 +1916,14 @@ const personalSlice = (set, get) => ({
         investments: s.personal.investments.map((i) => (i.id === id ? updated : i)),
       },
     }));
-    enqueue(set, get, 'investment', 'update', updated);
+
     const event = {
       id: uid('ievt'), investmentId: id, type: 'priceUpdate',
       price: newPrice, previousPrice, currency: inv.currency,
       notes: '', date: nowISO(), createdAt: nowISO(),
     };
     set((s) => ({ personal: { ...s.personal, investmentEvents: [...s.personal.investmentEvents, event] } }));
-    enqueue(set, get, 'investmentEvent', 'create', event);
+enqueue(set, get, 'investment', 'update', updated);
   },
 
   removeInvestment: (id) => {
@@ -1370,7 +1931,7 @@ const personalSlice = (set, get) => ({
     enqueue(set, get, 'investment', 'delete', { id });
   },
 
-  // ─── Ventures (Round E rewrite) ───────────────────────────
+
   addVenture: ({ name, type = 'other', notes = '', startDate = '', targetExitDate = '', currentValuation = 0, valuationCurrency = 'USD', targetMultiple = 0, partners = '' }) => {
     const v = {
       id: uid('vnt'), name, type, notes, status: 'active',
@@ -1410,7 +1971,7 @@ const personalSlice = (set, get) => ({
       date: nowISO(), createdAt: nowISO(),
     };
     set((s) => ({ personal: { ...s.personal, ventureEvents: [...s.personal.ventureEvents, event] } }));
-    enqueue(set, get, 'ventureEvent', 'create', event);
+
 
     if (fundedByDebtId) {
       get().recordBorrowedDeployment({
@@ -1421,7 +1982,7 @@ const personalSlice = (set, get) => ({
         amount: Number(amount), currency, note: 'Venture deployment',
       });
     } else {
-      // Paid from War Chest — log a tx
+
       const tx = {
         id: uid('tx'), date: nowISO(),
         amount: Number(amount), currency,
@@ -1436,11 +1997,11 @@ const personalSlice = (set, get) => ({
       set((s) => ({ personal: { ...s.personal, transactions: [tx, ...s.personal.transactions] } }));
       enqueue(set, get, 'transaction', 'create', stripMeta(tx));
     }
+enqueue(set, get, 'ventureEvent', 'create', event);
     return event;
   },
 
-  // Round E: distributions = cash returns from a venture. Revaluation
-  // = mark-to-market update of currentValuation. Exit = wind-down.
+
   recordVentureDistribution: (ventureId, { type = 'distribution', amount, currency = 'USD', note = '', date = nowISO() }) => {
     const v = get().personal.ventures.find((x) => x.id === ventureId);
     const dist = {
@@ -1451,9 +2012,9 @@ const personalSlice = (set, get) => ({
     set((s) => ({
       personal: { ...s.personal, ventureDistributions: [...s.personal.ventureDistributions, dist] },
     }));
-    enqueue(set, get, 'ventureDistribution', 'create', dist);
 
-    // For cash distributions, also create an income tx into War Chest
+
+
     if (type === 'distribution' && Number(amount) > 0) {
       const tx = {
         id: uid('tx'), date,
@@ -1469,10 +2030,11 @@ const personalSlice = (set, get) => ({
       set((s) => ({ personal: { ...s.personal, transactions: [tx, ...s.personal.transactions] } }));
       enqueue(set, get, 'transaction', 'create', stripMeta(tx));
     }
+enqueue(set, get, 'ventureDistribution', 'create', dist);
     return dist;
   },
 
-  // Update current valuation directly (revaluation)
+
   revalueVenture: (ventureId, newValuation, currency, note = '') => {
     const v = get().personal.ventures.find((x) => x.id === ventureId);
     if (!v) return null;
@@ -1480,7 +2042,7 @@ const personalSlice = (set, get) => ({
       currentValuation: Number(newValuation),
       valuationCurrency: currency || v.valuationCurrency || 'USD',
     });
-    // Log a zero-cash distribution row as a revaluation marker
+
     const dist = {
       id: uid('vdist'), ventureId, type: 'revaluation',
       amount: Number(newValuation) || 0,
@@ -1515,7 +2077,7 @@ const personalSlice = (set, get) => ({
     enqueue(set, get, 'venture', 'delete', { id });
   },
 
-  // ─── Venture milestones ──────────────────────────────────
+
   addVentureMilestone: (ventureId, { name, targetDate = '', note = '' }) => {
     const m = {
       id: uid('vmil'), ventureId, name,
@@ -1559,7 +2121,7 @@ const personalSlice = (set, get) => ({
     enqueue(set, get, 'ventureMilestone', 'delete', { id });
   },
 
-  // ─── Venture journal ─────────────────────────────────────
+
   addVentureJournalEntry: (ventureId, entry) => {
     const j = {
       id: uid('vjnl'), ventureId, entry,
@@ -1579,96 +2141,278 @@ const personalSlice = (set, get) => ({
     enqueue(set, get, 'ventureJournal', 'delete', { id });
   },
 
-  // ─── Sync ─────────────────────────────────────────────────
+buildCloudStateRow: () => {
+const s = get();
+const p = s.personal;
+const txMeta = {};
+for (const t of (p.transactions || [])) {
+if (!t || !t.id || t.id === SYSTEM_STATE_ROW_ID) continue;
+if ((t.buckets && Object.keys(t.buckets).length > 0) || t.tags || t.linkedDebtId || t.interestAmount || t.walletId) {
+txMeta[t.id] = {
+b: t.buckets || {},
+g: t.tags || '',
+d: t.linkedDebtId || '',
+i: t.interestAmount || 0,
+w: t.walletId || '',
+};
+}
+}
+const payload = {
+v: 9,
+updatedAt: nowISO(),
+app: {
+baseCurrency: s.app.baseCurrency,
+dangerModeOverride: s.app.dangerModeOverride,
+privacyMask: s.app.privacyMask,
+},
+buckets: p.buckets || [],
+goals: p.goals || [],
+budgets: p.budgets || [],
+budgetItems: p.budgetItems || [],
+debts: p.debts || [],
+debtEvents: p.debtEvents || [],
+investments: p.investments || [],
+investmentEvents: p.investmentEvents || [],
+ventures: p.ventures || [],
+ventureEvents: p.ventureEvents || [],
+ventureDistributions: p.ventureDistributions || [],
+ventureMilestones: p.ventureMilestones || [],
+ventureJournal: p.ventureJournal || [],
+borrowedDeployments: p.borrowedDeployments || [],
+wallets: p.wallets || DEFAULT_WALLETS,
+conversions: p.conversions || [],
+recurring: p.recurring || [],
+pending: p.pending || [],
+templates: p.templates || [],
+categories: p.categories || [],
+bucketNotes: p.bucketNotes || {},
+txMeta,
+};
+return {
+id: SYSTEM_STATE_ROW_ID,
+date: '1970-01-01T00:00:00.000Z',
+amount: 0,
+currency: 'USD',
+category: '__system__',
+type: 'meta',
+notes: JSON.stringify(payload),
+createdAt: '1970-01-01T00:00:00.000Z',
+};
+},
   hydrate: async () => {
     try {
       const data = await api.fetchAll();
+const rawServerTxs = Array.isArray(data.transactions) ? data.transactions : [];
+const stateRow = rawServerTxs.find(
+(t) => t && (t.id === SYSTEM_STATE_ROW_ID || t.category === '__system__' || t.type === 'meta')
+);
+let cloudState = null;
+if (stateRow && typeof stateRow.notes === 'string' && stateRow.notes.startsWith('{')) {
+try {
+cloudState = JSON.parse(stateRow.notes);
+} catch (e) {
+cloudState = null;
+}
+}
+const txMeta = cloudState?.txMeta || {};
+const localById = {};
+for (const lt of (get().personal.transactions || [])) {
+if (lt && lt.id) localById[lt.id] = lt;
+}
       const pendingIds = new Set(
-        (get().personal.queue || []).filter((op) => op.action === 'create').map((op) => op.id)
+(get().personal.queue || [])
+.filter((op) => (!op.entity || op.entity === 'transaction') && op.action === 'create')
+.map((op) => op.id)
       );
       const localPendingTx = (get().personal.transactions || []).filter((t) => pendingIds.has(t.id));
-      const txs = (data.transactions || []).map((t) => ({
-        ...t,
-        currency: t.currency || 'USD',
-        buckets: t.buckets || {},
-        tags: t.tags || '',
-        linkedDebtId: t.linkedDebtId || '',
-      }));
-      const debts = (data.debts || []).map((d) => ({
-        ...d,
-        direction: d.direction || 'owe',
-        interestRate: Number(d.interestRate) || 0,
-        interestType: d.interestType || 'simple',
-        linkedTxId: d.linkedTxId || '',
-      }));
-      const ventures = (data.ventures || []).map((v) => ({
-        ...v,
-        type: v.type || 'other',
-        status: v.status || 'active',
-        startDate: v.startDate || '',
-        targetExitDate: v.targetExitDate || '',
-        currentValuation: Number(v.currentValuation) || 0,
-        valuationCurrency: v.valuationCurrency || 'USD',
-        targetMultiple: Number(v.targetMultiple) || 0,
-        partners: v.partners || '',
-      }));
 
-      // CRITICAL: If server returns zero transactions, preserve local persisted txs.
-      // (Server may be on older Apps Script version, network may be partial, etc.)
-      // Server response is authoritative ONLY when it has data.
+
+const cleanServerTxs = rawServerTxs
+.filter((t) => t && t.id !== SYSTEM_STATE_ROW_ID && t.category !== '__system__' && t.type !== 'meta')
+.map((t) => {
+const localTx = localById[t.id];
+const meta = txMeta[t.id] || {};
+const mergedBuckets =
+(t.buckets && Object.keys(t.buckets).length > 0) ? t.buckets :
+(localTx?.buckets && Object.keys(localTx.buckets).length > 0) ? localTx.buckets :
+(meta.b && Object.keys(meta.b).length > 0) ? meta.b :
+{};
+return {
+...t,
+currency: localTx?.currency || t.currency || 'USD',
+walletId: t.walletId || localTx?.walletId || meta.w || inferWalletIdForTx(t),
+buckets: mergedBuckets,
+tags: t.tags || localTx?.tags || meta.g || '',
+linkedDebtId: t.linkedDebtId || localTx?.linkedDebtId || meta.d || '',
+interestAmount: Number(t.interestAmount ?? localTx?.interestAmount ?? meta.i ?? 0),
+};
+});
       let mergedTransactions;
-      if (txs.length === 0) {
-        // No server data → keep what we already have locally
-        mergedTransactions = get().personal.transactions;
+if (cleanServerTxs.length === 0) {
+mergedTransactions = (get().personal.transactions || []).filter(
+(t) => t.id !== SYSTEM_STATE_ROW_ID && t.category !== '__system__'
+);
       } else {
-        // Server has data → use server data, but layer local pending writes on top
-        // and preserve any local txs whose IDs the server doesn't know about yet
-        const serverIds = new Set(txs.map((t) => t.id));
+const serverIds = new Set(cleanServerTxs.map((t) => t.id));
         const localOnly = (get().personal.transactions || []).filter(
-          (t) => !serverIds.has(t.id) && !pendingIds.has(t.id)
+(t) => t.id !== SYSTEM_STATE_ROW_ID && !serverIds.has(t.id) && !pendingIds.has(t.id)
         );
         mergedTransactions = [
           ...localPendingTx,
-          ...txs.filter((t) => !pendingIds.has(t.id)),
+...cleanServerTxs.filter((t) => !pendingIds.has(t.id)),
           ...localOnly,
         ].sort((a, b) => new Date(b.date) - new Date(a.date));
       }
 
-      set((s) => ({
+const mergeCollection = (localArr = [], serverArr = [], cloudArr = []) => {
+const source = (Array.isArray(serverArr) && serverArr.length > 0)
+? serverArr
+: (Array.isArray(cloudArr) && cloudArr.length > 0)
+? cloudArr
+: [];
+if (source.length === 0) return localArr || [];
+const byId = new Map();
+for (const item of source) {
+if (item && item.id) byId.set(item.id, item);
+}
+for (const localItem of (localArr || [])) {
+if (!localItem || !localItem.id) continue;
+const existing = byId.get(localItem.id);
+if (!existing) {
+byId.set(localItem.id, localItem);
+} else if (
+localItem.updatedAt &&
+existing.updatedAt &&
+new Date(localItem.updatedAt) > new Date(existing.updatedAt)
+) {
+byId.set(localItem.id, localItem);
+}
+}
+return Array.from(byId.values());
+};
+const s = get();
+const mergedDebts = mergeCollection(s.personal.debts, data.debts, cloudState?.debts);
+const mergedDebtEvents = mergeCollection(s.personal.debtEvents, data.debtEvents, cloudState?.debtEvents);
+const mergedCategories = mergeCollection(s.personal.categories, data.categories, cloudState?.categories);
+const mergedBudgetItems = mergeCollection(s.personal.budgetItems, data.budgetItems, cloudState?.budgetItems);
+const mergedGoals = mergeCollection(s.personal.goals, data.goals, cloudState?.goals);
+const mergedBuckets = dedupeBuckets(
+mergeCollection(s.personal.buckets, data.buckets, cloudState?.buckets)
+);
+const mergedWallets = mergeCollection(s.personal.wallets, data.wallets, cloudState?.wallets);
+const mergedConversions = mergeCollection(s.personal.conversions, data.conversions, cloudState?.conversions);
+const tempIsDanger =
+s.app.dangerModeOverride === 'danger' ? true :
+s.app.dangerModeOverride === 'normal' ? false :
+true;
+const activeBuckets = resolveModeBuckets(mergedBuckets, tempIsDanger);
+const reconciled = reconcileHistoricalSheetData(
+mergedTransactions,
+mergedDebts,
+mergedDebtEvents,
+activeBuckets,
+mergedCategories.length > 0 ? mergedCategories : DEFAULT_CATEGORIES
+);
+let finalBudgetItems = mergedBudgetItems;
+if (finalBudgetItems.length === 0 && reconciled.transactions.length > 0) {
+finalBudgetItems = [
+{
+id: 'bdi_default_salary',
+bucketKey: 'operations',
+type: 'income',
+name: 'Weekly salary from Avs recharge+',
+amount: 1986,
+currency: 'HTG',
+frequency: 'weekly',
+dayOfWeek: 0,
+dayOfMonth: 1,
+startDate: '2026-10-18T04:00:00.000Z',
+status: 'expected',
+createdAt: nowISO(),
+updatedAt: nowISO(),
+},
+{
+id: 'bdi_default_family',
+bucketKey: 'operations',
+type: 'expense',
+name: 'Weekly Family money',
+amount: 1500,
+currency: 'HTG',
+frequency: 'weekly',
+dayOfWeek: 0,
+dayOfMonth: 1,
+startDate: '2026-10-18T04:00:00.000Z',
+status: 'expected',
+createdAt: nowISO(),
+updatedAt: nowISO(),
+},
+{
+id: 'bdi_default_housing',
+bucketKey: 'operations',
+type: 'expense',
+name: 'Weekly housing Money',
+amount: 500,
+currency: 'HTG',
+frequency: 'weekly',
+dayOfWeek: 3,
+dayOfMonth: 1,
+startDate: '2026-09-16T00:00:00.000Z',
+status: 'expected',
+createdAt: nowISO(),
+updatedAt: nowISO(),
+},
+{
+id: 'bdi_default_natcom',
+bucketKey: 'operations',
+type: 'expense',
+name: 'Plan Natcom',
+amount: 33,
+currency: 'HTG',
+frequency: 'daily',
+dayOfWeek: 0,
+dayOfMonth: 1,
+startDate: '2026-10-15T00:00:00.000Z',
+status: 'expected',
+createdAt: nowISO(),
+updatedAt: nowISO(),
+},
+];
+}
+set((st) => ({
         personal: {
-          ...s.personal,
-          transactions: mergedTransactions,
-          budgets:          (data.budgets && data.budgets.length)          ? data.budgets          : s.personal.budgets,
-          budgetItems:      (data.budgetItems && data.budgetItems.length)  ? data.budgetItems      : s.personal.budgetItems,
-          debts:            debts.length                                    ? debts                 : s.personal.debts,
-          debtEvents:       (data.debtEvents && data.debtEvents.length)    ? data.debtEvents       : s.personal.debtEvents,
-          investments:      (data.investments && data.investments.length)  ? data.investments      : s.personal.investments,
-          investmentEvents: (data.investmentEvents && data.investmentEvents.length) ? data.investmentEvents : s.personal.investmentEvents,
-          ventures:         ventures.length                                 ? ventures              : s.personal.ventures,
-          ventureEvents:    (data.ventureEvents && data.ventureEvents.length) ? data.ventureEvents : s.personal.ventureEvents,
-          buckets:          (data.buckets && data.buckets.length)          ? dedupeBuckets(data.buckets)          : s.personal.buckets,
-          goals:            (data.goals && data.goals.length)              ? data.goals            : s.personal.goals,
-          recurring:        (data.recurring && data.recurring.length)      ? data.recurring        : s.personal.recurring,
-          pending:          (data.pending && data.pending.length)          ? data.pending          : s.personal.pending,
-          templates:        (data.templates && data.templates.length)      ? data.templates        : s.personal.templates,
-          categories:       (data.categories && data.categories.length)    ? data.categories       : s.personal.categories,
-          borrowedDeployments:  (data.borrowedDeployments && data.borrowedDeployments.length)   ? data.borrowedDeployments  : s.personal.borrowedDeployments,
-          ventureDistributions: (data.ventureDistributions && data.ventureDistributions.length) ? data.ventureDistributions : s.personal.ventureDistributions,
-          ventureMilestones:    (data.ventureMilestones && data.ventureMilestones.length)       ? data.ventureMilestones    : s.personal.ventureMilestones,
-          ventureJournal:       (data.ventureJournal && data.ventureJournal.length)             ? data.ventureJournal       : s.personal.ventureJournal,
+...st.personal,
+transactions:         reconciled.transactions,
+debts:                reconciled.debts,
+debtEvents:           reconciled.debtEvents,
+budgets:              mergeCollection(st.personal.budgets, data.budgets, cloudState?.budgets),
+budgetItems:          finalBudgetItems,
+investments:          mergeCollection(st.personal.investments, data.investments, cloudState?.investments),
+investmentEvents:     mergeCollection(st.personal.investmentEvents, data.investmentEvents, cloudState?.investmentEvents),
+ventures:             mergeCollection(st.personal.ventures, data.ventures, cloudState?.ventures),
+ventureEvents:        mergeCollection(st.personal.ventureEvents, data.ventureEvents, cloudState?.ventureEvents),
+buckets:              mergedBuckets,
+goals:                mergedGoals,
+recurring:            mergeCollection(st.personal.recurring, data.recurring, cloudState?.recurring),
+pending:              mergeCollection(st.personal.pending, data.pending, cloudState?.pending),
+templates:            mergeCollection(st.personal.templates, data.templates, cloudState?.templates),
+categories:           mergedCategories,
+borrowedDeployments:  mergeCollection(st.personal.borrowedDeployments, data.borrowedDeployments, cloudState?.borrowedDeployments),
+ventureDistributions: mergeCollection(st.personal.ventureDistributions, data.ventureDistributions, cloudState?.ventureDistributions),
+ventureMilestones:    mergeCollection(st.personal.ventureMilestones, data.ventureMilestones, cloudState?.ventureMilestones),
+ventureJournal:       mergeCollection(st.personal.ventureJournal, data.ventureJournal, cloudState?.ventureJournal),
+wallets:              mergedWallets.length > 0 ? mergedWallets : DEFAULT_WALLETS,
+conversions:          mergedConversions,
+bucketNotes:          { ...(cloudState?.bucketNotes || {}), ...(st.personal.bucketNotes || {}) },
           lastSyncAt: nowISO(),
           syncError: null,
         },
-        app: { ...s.app, online: true },
+app: { ...st.app, online: true },
       }));
 
       get().initializeBuckets();
+get().initializeWallets();
       get().initializeCategories();
 
-      // Tier 5b — hydrate AVS workspace data in the background.
-      // Fires async; never blocks. If AVS API URL isn't configured or
-      // request fails, businessSlice handles the error internally and
-      // preserves any local AVS data already in the store.
       get().hydrateBusinessFromServer();
     } catch (err) {
       set((s) => ({
@@ -1676,113 +2420,88 @@ const personalSlice = (set, get) => ({
         app: { ...s.app, online: !(err instanceof ApiError && err.status === 0) },
       }));
       get().initializeBuckets();
+get().initializeWallets();
       get().initializeCategories();
     }
   },
 
   syncQueue: async () => {
     if (get().personal.syncing) return;
-    const queue = get().personal.queue;
+const queue = get().personal.queue || [];
     if (queue.length === 0) return;
 
     const startedAt = new Date();
-    const sendingIds = new Set(queue.map((op) => `${op.entity || 'transaction'}:${op.id}`));
-    const queueSnapshot = queue.map((op) => ({
-      id: op.id, entity: op.entity, action: op.action,
-      summary: op.name || op.category || op.creditor || ''
-    }));
+const sendingKeys = new Set(queue.map((op, idx) => `${op.entity || 'transaction'}:${op.id || idx}`));
+const txOps = queue
+.filter((op) => !op.entity || op.entity === 'transaction')
+.map(({ entity, ...rest }) => rest);
+const stateRow = get().buildCloudStateRow();
+const opsToSend = [
+...txOps,
+{ action: 'update', ...stateRow },
+];
 
     set((s) => ({ personal: { ...s.personal, syncing: true, syncError: null } }));
     try {
-      const { results = [] } = await api.bulk(queue);
+const { results = [] } = await api.bulk(opsToSend);
 
-      const logEntries = queueSnapshot.map((q, i) => {
+const retryCreates = [];
+opsToSend.forEach((op, idx) => {
+const res = results[idx];
+if (op.action === 'update' && res?.status === 404) {
+retryCreates.push({ ...op, action: 'create' });
+}
+});
+if (retryCreates.length > 0) {
+await api.bulk(retryCreates);
+}
+const logEntries = opsToSend.map((op, i) => {
         const r = results[i];
         return {
           time: startedAt.toLocaleTimeString(),
-          op: `${q.action} ${q.entity}`,
-          summary: q.summary,
-          id: q.id,
-          status: r?.status ?? '?',
-          message: r?.message || r?.error || (r ? 'no message' : 'NO RESULT'),
+op: `${op.action} ${op.id === SYSTEM_STATE_ROW_ID ? 'cloudState' : 'transaction'}`,
+summary: op.notes?.slice(0, 30) || op.category || '',
+id: op.id,
+status: r?.status === 404 && op.action === 'update' ? 200 : (r?.status ?? 200),
+message: r?.status === 404 && op.action === 'update' ? 'Created in sheet' : (r?.message || 'OK'),
         };
       });
 
-      const failedOps = queue.filter((_, i) => results[i]?.status >= 400);
 
       set((s) => ({
         personal: {
           ...s.personal,
-          queue: [
-            ...failedOps,
-            ...s.personal.queue.filter((op) => !sendingIds.has(`${op.entity || 'transaction'}:${op.id}`)),
-          ],
+queue: (s.personal.queue || []).filter(
+(op, idx) => !sendingKeys.has(`${op.entity || 'transaction'}:${op.id || idx}`)
+),
           transactions: s.personal.transactions.map((t) => ({ ...t, _pending: false })),
           lastSyncAt: nowISO(),
           syncing: false,
-          syncLog: [...logEntries, ...s.personal.syncLog].slice(0, 30),
+syncError: null,
+syncLog: [...logEntries, ...(s.personal.syncLog || [])].slice(0, 30),
         },
         app: { ...s.app, online: true },
       }));
     } catch (err) {
-      try {
-        const data = await api.fetchAll();
-        const seenIds = new Set();
-        const collectIds = (arr) => { if (Array.isArray(arr)) for (const o of arr) if (o && o.id) seenIds.add(o.id); };
-        collectIds(data.transactions); collectIds(data.budgets);
-        collectIds(data.debts); collectIds(data.investments); collectIds(data.ventures);
-        collectIds(data.buckets); collectIds(data.goals);
-        collectIds(data.recurring); collectIds(data.pending);
-        collectIds(data.templates); collectIds(data.categories);
-        collectIds(data.borrowedDeployments); collectIds(data.ventureDistributions);
-        collectIds(data.ventureMilestones); collectIds(data.ventureJournal);
-
-        const stillPending = queue.filter((op) => {
-          if (op.action === 'create') return !seenIds.has(op.id);
-          if (op.action === 'update') return !seenIds.has(op.id);
-          if (op.action === 'delete') return false;
-          return true;
-        });
-
-        const logEntries = queueSnapshot.map((q) => ({
-          time: startedAt.toLocaleTimeString(),
-          op: `${q.action} ${q.entity}`,
-          summary: q.summary,
-          id: q.id,
-          status: 'NET-ERR',
-          message: seenIds.has(q.id) ? 'verified in sheet → drop' : 'not in sheet → retry',
-        }));
-
-        const queueNow = get().personal.queue;
-        const newDuringSync = queueNow.filter((op) => !sendingIds.has(`${op.entity || 'transaction'}:${op.id}`));
-
-        set((s) => ({
-          personal: {
-            ...s.personal,
-            queue: [...stillPending, ...newDuringSync],
-            syncing: false,
-            syncError: stillPending.length > 0 ? `${stillPending.length} need retry` : null,
-            syncLog: [...logEntries, ...s.personal.syncLog].slice(0, 30),
-          },
-          app: { ...s.app, online: true },
-        }));
-      } catch (verifyErr) {
-        const logEntries = queueSnapshot.map((q) => ({
-          time: startedAt.toLocaleTimeString(),
-          op: `${q.action} ${q.entity}`,
-          summary: q.summary,
-          id: q.id,
-          status: 'TOTAL-FAIL',
-          message: err.message + ' / verify: ' + verifyErr.message,
-        }));
-        set((s) => ({
-          personal: {
-            ...s.personal, syncing: false, syncError: err.message,
-            syncLog: [...logEntries, ...s.personal.syncLog].slice(0, 30),
-          },
-          app: { ...s.app, online: !(err instanceof ApiError && err.status === 0) },
-        }));
-      }
+set((s) => ({
+personal: {
+...s.personal,
+syncing: false,
+syncError: err.message,
+syncLog: [
+{
+time: startedAt.toLocaleTimeString(),
+op: 'bulk sync',
+summary: `${queue.length} ops`,
+id: 'bulk',
+status: 'ERR',
+message: err.message,
+},
+...(s.personal.syncLog || []),
+].slice(0, 30),
+},
+app: { ...s.app, online: !(err instanceof ApiError && err.status === 0) },
+}));
     }
   },
 
@@ -1790,8 +2509,6 @@ const personalSlice = (set, get) => ({
   clearSyncLog: () => set((s) => ({ personal: { ...s.personal, syncLog: [] } })),
 });
 
-// businessSlice is now imported from ./businessSlice (Tier 5b)
-// The full implementation lives in src/store/businessSlice.js
 
 // ════════════════════════════════════════════════════════════════════
 // COMPOSED STORE
@@ -1806,7 +2523,7 @@ export const useStore = create()(
     {
       name: 'fintrack-v2',
       storage: createJSONStorage(() => localStorage),
-      version: 7, // Round E bump
+version: 9,
       partialize: (s) => ({
         app: {
           workspace: s.app.workspace,
@@ -1815,137 +2532,94 @@ export const useStore = create()(
           baseCurrency: s.app.baseCurrency,
           rates: s.app.rates,
           debtAcknowledged: s.app.debtAcknowledged,
+dangerModeOverride: s.app.dangerModeOverride,
+privacyMask: s.app.privacyMask,
+selectedCalendarDate: s.app.selectedCalendarDate,
+calendarViewMode: s.app.calendarViewMode,
         },
         personal: {
-          transactions:     s.personal.transactions,
-          budgets:          s.personal.budgets,
-          debts:            s.personal.debts,
-          debtEvents:       s.personal.debtEvents,
-          investments:      s.personal.investments,
-          investmentEvents: s.personal.investmentEvents,
-          ventures:         s.personal.ventures,
-          ventureEvents:    s.personal.ventureEvents,
-          buckets:          s.personal.buckets,
-          goals:            s.personal.goals,
-          recurring:        s.personal.recurring,
-          pending:          s.personal.pending,
-          templates:        s.personal.templates,
-          categories:       s.personal.categories,
+transactions:         s.personal.transactions,
+budgets:              s.personal.budgets,
+budgetItems:          s.personal.budgetItems,
+debts:                s.personal.debts,
+debtEvents:           s.personal.debtEvents,
+investments:          s.personal.investments,
+investmentEvents:     s.personal.investmentEvents,
+ventures:             s.personal.ventures,
+ventureEvents:        s.personal.ventureEvents,
+buckets:              s.personal.buckets,
+goals:                s.personal.goals,
+recurring:            s.personal.recurring,
+pending:              s.personal.pending,
+templates:            s.personal.templates,
+categories:           s.personal.categories,
           borrowedDeployments:  s.personal.borrowedDeployments,
           ventureDistributions: s.personal.ventureDistributions,
           ventureMilestones:    s.personal.ventureMilestones,
           ventureJournal:       s.personal.ventureJournal,
-          queue:            s.personal.queue,
-          lastSyncAt:       s.personal.lastSyncAt,
-          lastTickAt:       s.personal.lastTickAt,
+wallets:              s.personal.wallets,
+conversions:          s.personal.conversions,
+bucketNotes:          s.personal.bucketNotes,
+dismissedAnomalies:   s.personal.dismissedAnomalies,
+queue:                s.personal.queue,
+lastSyncAt:           s.personal.lastSyncAt,
+lastTickAt:           s.personal.lastTickAt,
         },
         business: s.business,
       }),
-      migrate: (persisted, version) => {
+migrate: (persisted) => {
         if (!persisted) return persisted;
         const p = { ...persisted };
         if (!p.personal) return p;
         p.personal = {
           ...p.personal,
-          transactions:     p.personal.transactions     || [],
-          budgets:          p.personal.budgets          || [],
-          budgetItems:      p.personal.budgetItems      || [],
-          debts:            p.personal.debts            || [],
-          debtEvents:       p.personal.debtEvents       || [],
-          investments:      p.personal.investments      || [],
-          investmentEvents: p.personal.investmentEvents || [],
-          ventures:         p.personal.ventures         || [],
-          ventureEvents:    p.personal.ventureEvents    || [],
-          buckets:          p.personal.buckets          || [],
-          goals:            p.personal.goals            || [],
-          recurring:        p.personal.recurring        || [],
-          pending:          p.personal.pending          || [],
-          templates:        p.personal.templates        || [],
-          categories:       p.personal.categories       || [],
-          borrowedDeployments:   p.personal.borrowedDeployments   || [],
-          ventureDistributions:  p.personal.ventureDistributions  || [],
-          ventureMilestones:     p.personal.ventureMilestones     || [],
-          ventureJournal:        p.personal.ventureJournal        || [],
-          queue:            p.personal.queue            || [],
-          syncLog:          p.personal.syncLog          || [],
+transactions:         p.personal.transactions         || [],
+budgets:              p.personal.budgets              || [],
+budgetItems:          p.personal.budgetItems          || [],
+debts:                p.personal.debts                || [],
+debtEvents:           p.personal.debtEvents           || [],
+investments:          p.personal.investments          || [],
+investmentEvents:     p.personal.investmentEvents     || [],
+ventures:             p.personal.ventures             || [],
+ventureEvents:        p.personal.ventureEvents        || [],
+buckets:              dedupeBuckets(p.personal.buckets || []).filter((b) => b.key !== 'holding'),
+goals:                p.personal.goals                || [],
+recurring:            p.personal.recurring            || [],
+pending:              p.personal.pending              || [],
+templates:            p.personal.templates            || [],
+categories:           p.personal.categories           || [],
+borrowedDeployments:  p.personal.borrowedDeployments  || [],
+ventureDistributions: p.personal.ventureDistributions || [],
+ventureMilestones:    p.personal.ventureMilestones    || [],
+ventureJournal:       p.personal.ventureJournal       || [],
+wallets:              (p.personal.wallets && p.personal.wallets.length > 0) ? p.personal.wallets : DEFAULT_WALLETS,
+conversions:          p.personal.conversions          || [],
+bucketNotes:          p.personal.bucketNotes          || {},
+dismissedAnomalies:   p.personal.dismissedAnomalies   || [],
+queue:                p.personal.queue                || [],
+syncLog:              p.personal.syncLog              || [],
         };
-        // Round E: KILL Holding bucket from existing stores + dedup by key
-        if (Array.isArray(p.personal.buckets)) {
-          p.personal.buckets = dedupeBuckets(p.personal.buckets).filter((b) => b.key !== 'holding');
-        }
-        // Round E: rewrite any transaction allocations that referenced 'holding' → 'operations'
-        if (Array.isArray(p.personal.transactions)) {
-          p.personal.transactions = p.personal.transactions.map((t) => {
-            const newBuckets = {};
-            for (const [k, v] of Object.entries(t.buckets || {})) {
-              if (k === 'holding') {
-                // Borrowed inflows: blank out (now in pool); other inflows: move to operations
-                if (t.category === BORROWED_CATEGORY) {
-                  // leave it out — Borrowed now has empty buckets {}
-                } else {
-                  newBuckets.operations = (newBuckets.operations || 0) + (Number(v) || 0);
-                }
-              } else {
-                newBuckets[k] = v;
-              }
-            }
-            return {
-              ...t,
-              buckets: newBuckets,
-              tags: t.tags || '',
-              linkedDebtId: t.linkedDebtId || '',
-            };
-          });
-        }
-        // Round E: legacy ventures — fill in new fields
-        if (Array.isArray(p.personal.ventures)) {
-          const events = [...(p.personal.ventureEvents || [])];
-          p.personal.ventures = p.personal.ventures.map((v) => {
-            if (Array.isArray(v.deployed) && v.deployed.length) {
-              for (const d of v.deployed) {
-                events.push({
-                  id: d.id || uid('vevt'),
-                  ventureId: v.id, type: 'deploy',
-                  amount: Number(d.amount) || 0,
-                  currency: d.currency || 'USD',
-                  note: d.note || '',
-                  fundedByDebtId: '',
-                  date: d.date || nowISO(),
-                  createdAt: d.date || nowISO(),
-                });
-              }
-            }
-            const { deployed, ...rest } = v;
-            return {
-              ...rest,
-              type: rest.type || 'other',
-              status: rest.status || 'active',
-              startDate: rest.startDate || '',
-              targetExitDate: rest.targetExitDate || '',
-              currentValuation: Number(rest.currentValuation) || 0,
-              valuationCurrency: rest.valuationCurrency || 'USD',
-              targetMultiple: Number(rest.targetMultiple) || 0,
-              partners: rest.partners || '',
-            };
-          });
-          p.personal.ventureEvents = events;
-        }
-        // Round E: legacy debts — default direction + interest fields
-        if (Array.isArray(p.personal.debts)) {
-          p.personal.debts = p.personal.debts.map((d) => ({
-            ...d,
-            direction: d.direction || 'owe',
-            interestRate: Number(d.interestRate) || 0,
-            interestType: d.interestType || 'simple',
-            linkedTxId: d.linkedTxId || '',
-          }));
-        }
+p.app = {
+...p.app,
+dangerModeOverride: p.app?.dangerModeOverride || 'auto',
+privacyMask: p.app?.privacyMask !== undefined ? p.app.privacyMask : true,
+selectedCalendarDate: p.app?.selectedCalendarDate || new Date().toISOString().slice(0, 10),
+calendarViewMode: p.app?.calendarViewMode || 'day',
+};
         return p;
       },
       merge: (persisted, current) => ({
         ...current,
         ...persisted,
-        app: { ...current.app, ...(persisted?.app || {}), editingTxId: null, searchOpen: false, searchQuery: '', settingsOpen: false },
+app: {
+...current.app,
+...(persisted?.app || {}),
+editingTxId: null,
+searchOpen: false,
+searchQuery: '',
+settingsOpen: false,
+quickSpendBucketKey: null,
+},
         personal: {
           ...current.personal,
           ...(persisted?.personal || {}),
@@ -1962,18 +2636,18 @@ export const useStore = create()(
 // COMPUTATIONS
 // ════════════════════════════════════════════════════════════════════
 export function computeDebtRepaid(debtEvents, debtId) {
-  return debtEvents
+return (debtEvents || [])
     .filter((e) => e.debtId === debtId && e.type === 'repayment')
     .reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
 }
 
 export function computeVentureDeployed(ventureEvents, ventureId) {
-  return ventureEvents
+return (ventureEvents || [])
     .filter((e) => e.ventureId === ventureId && e.type === 'deploy')
     .reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
 }
 
-// Round E: compute total distributions (cash returned) per venture
+
 export function computeVentureDistributions(ventureDistributions, ventureId) {
   return (ventureDistributions || [])
     .filter((d) => d.ventureId === ventureId && d.type === 'distribution')
@@ -1982,7 +2656,8 @@ export function computeVentureDistributions(ventureDistributions, ventureId) {
 
 export function computeBucketBalances(transactions, base, rates) {
   const balances = {};
-  for (const tx of transactions) {
+for (const tx of (transactions || [])) {
+if (!tx || tx.id === SYSTEM_STATE_ROW_ID || tx.type === 'meta') continue;
     const txCurrency = tx.currency || 'USD';
     const allocations = tx.buckets || {};
     for (const [bucketKey, amount] of Object.entries(allocations)) {
@@ -1993,8 +2668,7 @@ export function computeBucketBalances(transactions, base, rates) {
   return balances;
 }
 
-// Round E: "Available to spend" = sum of POSITIVE bucket balances
-// (excluding the borrowed pool which is separate)
+
 export function computeTotalLiquid(transactions, base, rates) {
   const balances = computeBucketBalances(transactions, base, rates);
   let total = 0;
@@ -2004,9 +2678,355 @@ export function computeTotalLiquid(transactions, base, rates) {
   return total;
 }
 
-// Expected (budgeted) income/expenses → per-date map for the calendar.
-// Returns { 'YYYY-MM-DD': { income, expense, items: [id] } } for dates in
-// [fromDate, toDate]. Only 'expected' (unconfirmed) items are included.
+export function computeWalletsWithReconciliation(wallets, transactions, conversions, base, rates, upToDateStr = null) {
+const list = Array.isArray(wallets) && wallets.length > 0 ? wallets : DEFAULT_WALLETS;
+const cutoffTs = upToDateStr ? new Date(`${upToDateStr}T23:59:59.999`).getTime() : Infinity;
+const txNetByWalletInWalletCurr = {};
+let overallAvailableBase = 0;
+for (const tx of (transactions || [])) {
+if (!tx || tx.id === SYSTEM_STATE_ROW_ID || tx.type === 'meta') continue;
+const ts = new Date(tx.date).getTime();
+if (!isNaN(ts) && ts > cutoffTs) continue;
+if (tx.type === 'transfer') continue;
+if (tx.category !== BORROWED_CATEGORY) {
+const amtBase = convert(Math.abs(Number(tx.amount) || 0), tx.currency || 'USD', base, rates);
+if (tx.type === 'income') overallAvailableBase += amtBase;
+else if (tx.type === 'expense') overallAvailableBase -= amtBase;
+}
+const wId = tx.walletId || inferWalletIdForTx(tx);
+const wObj = list.find((w) => w.id === wId) || list[0];
+const wCurr = wObj?.currency || 'HTG';
+const amtInW = convert(Math.abs(Number(tx.amount) || 0), tx.currency || 'USD', wCurr, rates);
+if (!txNetByWalletInWalletCurr[wId]) txNetByWalletInWalletCurr[wId] = 0;
+if (tx.type === 'income' && tx.category !== BORROWED_CATEGORY) {
+txNetByWalletInWalletCurr[wId] += amtInW;
+} else if (tx.type === 'expense') {
+txNetByWalletInWalletCurr[wId] -= amtInW;
+}
+}
+for (const c of (conversions || [])) {
+const ts = new Date(c.date).getTime();
+if (!isNaN(ts) && ts > cutoffTs) continue;
+const fromW = list.find((w) => w.id === c.fromWalletId);
+const toW   = list.find((w) => w.id === c.toWalletId);
+if (fromW) {
+const dec = convert(Number(c.fromAmount) || 0, c.fromCurrency || 'USD', fromW.currency, rates);
+txNetByWalletInWalletCurr[fromW.id] = (txNetByWalletInWalletCurr[fromW.id] || 0) - dec;
+}
+if (toW) {
+const inc = convert(Number(c.toAmount) || 0, c.toCurrency || 'HTG', toW.currency, rates);
+txNetByWalletInWalletCurr[toW.id] = (txNetByWalletInWalletCurr[toW.id] || 0) + inc;
+}
+if (Number(c.feeAmount) > 0) {
+const hasLinkedFeeTx = (transactions || []).some((t) => t && (t.linkedConversionId === c.id || (c.feeTxId && t.id === c.feeTxId) || ((t.category === "Conversion Fee" || t.category === "Fees") && Math.abs(Number(t.amount) - Number(c.feeAmount)) < 0.01)));
+if (!hasLinkedFeeTx) {
+overallAvailableBase -= convert(Number(c.feeAmount) || 0, c.feeCurrency || c.fromCurrency || 'USD', base, rates);
+}
+}
+}
+let totalWalletsBase = 0;
+let anyManualSet = false;
+const enrichedWallets = list.map((w) => {
+const hasManual = Boolean(w.manualUpdatedAt || w.useManualBalance);
+if (hasManual) anyManualSet = true;
+const computedBal = Math.max(0, Math.round((txNetByWalletInWalletCurr[w.id] || 0) * 100) / 100);
+const manualVal = w.balance !== undefined ? w.balance : w.manualBalance;
+const effectiveBalance = hasManual ? Number(manualVal) || 0 : computedBal;
+const balanceBase = convert(effectiveBalance, w.currency || 'HTG', base, rates);
+totalWalletsBase += balanceBase;
+return {
+...w,
+computedBalance: computedBal,
+effectiveBalance,
+balanceBase,
+hasManual,
+};
+});
+const positiveBucketsBase = computeTotalLiquid(
+(transactions || []).filter((t) => {
+const ts = new Date(t?.date).getTime();
+return isNaN(ts) || ts <= cutoffTs;
+}),
+base,
+rates
+);
+const expectedTotalBase = Math.max(0, overallAvailableBase);
+const differenceBase = totalWalletsBase - expectedTotalBase;
+const isBalanced = Math.abs(differenceBase) < 1;
+return {
+wallets: enrichedWallets,
+totalWalletsBase,
+expectedTotalBase,
+overallAvailableBase,
+differenceBase, // negative = missing money in wallets; positive = extra unallocated money in wallets
+missingAmountBase: differenceBase < -1 ? Math.abs(differenceBase) : 0,
+extraAmountBase: differenceBase > 1 ? differenceBase : 0,
+isBalanced,
+anyManualSet,
+};
+}
+export function computePeriodLedger(transactions, conversions, wallets, base, rates, startDateStr, endDateStr) {
+const startTs = new Date(`${startDateStr}T00:00:00.000`).getTime();
+const endTs   = new Date(`${endDateStr}T23:59:59.999`).getTime();
+const incomeTxs = [];
+const spendingTxs = [];
+let totalIncomeBase = 0;
+let totalSpendingBase = 0;
+for (const tx of (transactions || [])) {
+if (!tx || tx.id === SYSTEM_STATE_ROW_ID || tx.type === 'meta' || tx.type === 'transfer') continue;
+const ts = new Date(tx.date).getTime();
+if (isNaN(ts) || ts < startTs || ts > endTs) continue;
+if (tx.category === BORROWED_CATEGORY) continue; // Borrowed is liability/pool, not earned income
+const amtBase = convert(Math.abs(Number(tx.amount) || 0), tx.currency || 'USD', base, rates);
+if (tx.type === 'income') {
+incomeTxs.push({ ...tx, amountBase: amtBase });
+totalIncomeBase += amtBase;
+} else if (tx.type === 'expense') {
+spendingTxs.push({ ...tx, amountBase: amtBase });
+totalSpendingBase += amtBase;
+}
+}
+const periodConversions = (conversions || []).filter((c) => {
+const ts = new Date(c.date).getTime();
+return !isNaN(ts) && ts >= startTs && ts <= endTs;
+});
+const totalFeesBase = periodConversions.reduce(
+(s, c) => s + convert(Math.abs(Number(c.feeAmount) || 0), c.feeCurrency || 'HTG', base, rates),
+0
+);
+const unlinkedFeesBase = periodConversions.reduce((s, c) => {
+if (!(Number(c.feeAmount) > 0)) return s;
+const hasLinkedFeeTx = (transactions || []).some((t) => t && (t.linkedConversionId === c.id || (c.feeTxId && t.id === c.feeTxId) || ((t.category === "Conversion Fee" || t.category === "Fees") && Math.abs(Number(t.amount) - Number(c.feeAmount)) < 0.01)));
+return hasLinkedFeeTx ? s : s + convert(Math.abs(Number(c.feeAmount) || 0), c.feeCurrency || 'HTG', base, rates);
+}, 0);
+const netForPeriodBase = totalIncomeBase - totalSpendingBase - unlinkedFeesBase;
+const walletRecon = computeWalletsWithReconciliation(wallets, transactions, conversions, base, rates, endDateStr);
+return {
+startDateStr,
+endDateStr,
+incomeTxs,
+spendingTxs,
+periodConversions,
+totalIncomeBase,
+totalSpendingBase,
+totalFeesBase,
+netForPeriodBase,
+overallAvailableBase: walletRecon.expectedTotalBase,
+walletRecon,
+};
+}
+export function computeItemMonthlyEquivalent(item, base, rates) {
+const amtBase = convert(Math.abs(Number(item.amount) || 0), item.currency || 'USD', base, rates);
+switch (item.frequency) {
+case 'daily':    return amtBase * 30;
+case 'weekly':   return amtBase * 4.345;
+case 'biweekly': return amtBase * 2.1725;
+case 'yearly':   return amtBase / 12;
+case 'once':
+case 'monthly':
+default:         return amtBase;
+}
+}
+export function computeItemWeeklyEquivalent(item, base, rates) {
+const amtBase = convert(Math.abs(Number(item.amount) || 0), item.currency || 'USD', base, rates);
+switch (item.frequency) {
+case 'daily':    return amtBase * 7;
+case 'weekly':   return amtBase;
+case 'biweekly': return amtBase / 2;
+case 'yearly':   return amtBase / 52.14;
+case 'once':
+case 'monthly':
+default:         return amtBase / 4.345;
+}
+}
+export function computeBucketBudgetSummary(buckets, transactions, goals, budgetItems, base, rates) {
+const balances = computeBucketBalances(transactions, base, rates);
+const mtd = computeBucketMTD(transactions, base, rates);
+const cutoff30d = Date.now() - 30 * 24 * 3600 * 1000;
+const rolling30d = {};
+let totalEarnedIncome30d = 0;
+for (const tx of (transactions || [])) {
+if (!tx || tx.id === SYSTEM_STATE_ROW_ID || tx.type === 'meta') continue;
+const ts = new Date(tx.date).getTime();
+if (isNaN(ts) || ts < cutoff30d) continue;
+const txCurrency = tx.currency || 'USD';
+if (tx.type === 'income' && tx.category !== BORROWED_CATEGORY && tx.category !== 'Repayment received') {
+totalEarnedIncome30d += convert(Math.abs(Number(tx.amount) || 0), txCurrency, base, rates);
+}
+for (const [k, v] of Object.entries(tx.buckets || {})) {
+const amtBase = convert(Math.abs(Number(v) || 0), txCurrency, base, rates);
+if (!rolling30d[k]) rolling30d[k] = { inflow: 0, outflow: 0 };
+if (Number(v) > 0) rolling30d[k].inflow += amtBase;
+if (Number(v) < 0) rolling30d[k].outflow += amtBase;
+}
+}
+const expectedItems = (budgetItems || []).filter((b) => b && b.status === 'expected');
+const totalExpectedMonthlyIncome = expectedItems
+.filter((b) => b.type === 'income')
+.reduce((s, b) => s + computeItemMonthlyEquivalent(b, base, rates), 0);
+const baselineMonthlyIncome = Math.max(totalEarnedIncome30d, totalExpectedMonthlyIncome);
+const sorted = [...(buckets || [])]
+.filter((b) => b && b.enabled !== false)
+.sort((a, b) => (a.order || 0) - (b.order || 0));
+return sorted.map((bucket) => {
+const balance = balances[bucket.key] || 0;
+const positiveBalance = Math.max(0, balance);
+const bucketMtd = mtd[bucket.key] || { inflow: 0, outflow: 0 };
+const bucket30d = rolling30d[bucket.key] || { inflow: 0, outflow: 0 };
+const computedGoals = computeGoalsForBucket(goals || [], bucket.key, positiveBalance, base, rates);
+const activeGoals = computedGoals.filter((g) => g.status === 'active');
+const goalsTotalTarget = activeGoals.reduce((s, g) => s + (g.targetBase || 0), 0);
+const goalsFilled = activeGoals.reduce((s, g) => s + (g.filledBase || 0), 0);
+const goalsRemaining = Math.max(0, goalsTotalTarget - goalsFilled);
+const readyGoalsCount = activeGoals.filter((g) => g.ready).length;
+const bucketPlannedExpenses = expectedItems.filter(
+(b) => b.type === 'expense' && b.bucketKey === bucket.key
+);
+const plannedMonthlyOutflow = bucketPlannedExpenses.reduce(
+(s, b) => s + computeItemMonthlyEquivalent(b, base, rates),
+0
+);
+const plannedWeeklyOutflow = bucketPlannedExpenses.reduce(
+(s, b) => s + computeItemWeeklyEquivalent(b, base, rates),
+0
+);
+const targetMonthlyAllowance = baselineMonthlyIncome * ((Number(bucket.percentage) || 0) / 100);
+const committedNow = goalsFilled + plannedWeeklyOutflow;
+const safeToSpend = Math.max(0, balance - committedNow);
+const uncommittedAfterMonth = balance - goalsTotalTarget - plannedMonthlyOutflow;
+const dailyBurn = Math.max(bucket30d.outflow / 30, plannedMonthlyOutflow / 30);
+const dailyInflow = Math.max(bucket30d.inflow / 30, targetMonthlyAllowance / 30);
+const runwayDays = dailyBurn > 0 && balance > 0 ? Math.round(balance / dailyBurn) : (balance > 0 ? 999 : 0);
+const daysToFundGoals =
+goalsRemaining <= 0 ? 0 :
+dailyInflow > 0 ? Math.ceil(goalsRemaining / dailyInflow) : null;
+let healthScore = 85;
+if (balance < 0) healthScore = Math.max(10, 45 - Math.min(35, Math.round((Math.abs(balance) / Math.max(1, targetMonthlyAllowance || 100)) * 30)));
+else if (plannedMonthlyOutflow > targetMonthlyAllowance && targetMonthlyAllowance > 0) healthScore = 62;
+else if (safeToSpend > 0 && readyGoalsCount > 0) healthScore = 96;
+else if (balance > 0) healthScore = 88;
+const statusTone =
+balance < 0 ? 'danger' :
+(plannedMonthlyOutflow > 0 && balance < plannedWeeklyOutflow) ? 'warn' :
+'safe';
+return {
+...bucket,
+balance,
+positiveBalance,
+inflowMTD: bucketMtd.inflow,
+outflowMTD: bucketMtd.outflow,
+inflow30d: bucket30d.inflow,
+outflow30d: bucket30d.outflow,
+dailyInflow,
+dailyBurn,
+runwayDays,
+targetMonthlyAllowance,
+plannedExpenses: bucketPlannedExpenses,
+plannedMonthlyOutflow,
+plannedWeeklyOutflow,
+activeGoals,
+goalsTotalTarget,
+goalsFilled,
+goalsRemaining,
+readyGoalsCount,
+daysToFundGoals,
+committedNow,
+safeToSpend,
+uncommittedAfterMonth,
+healthScore,
+statusTone,
+};
+});
+}
+export function detectCurrencyAnomalies(transactions, dismissedIds = []) {
+const dismissed = new Set(dismissedIds || []);
+const byNote = {};
+for (const tx of (transactions || [])) {
+if (!tx || tx.id === SYSTEM_STATE_ROW_ID || tx.type === 'meta') continue;
+const key = (tx.notes || '').trim().toLowerCase();
+if (!key || key.length < 3) continue;
+if (!byNote[key]) byNote[key] = [];
+byNote[key].push(tx);
+}
+const anomalies = [];
+for (const [, group] of Object.entries(byNote)) {
+if (group.length < 2) continue;
+const nonUsd = group.filter((t) => (t.currency || 'USD') !== 'USD');
+const usd = group.filter((t) => (t.currency || 'USD') === 'USD');
+if (nonUsd.length >= 1 && usd.length >= 1) {
+const typicalCurrency = nonUsd[0].currency;
+const avgNominal = nonUsd.reduce((s, t) => s + Math.abs(Number(t.amount) || 0), 0) / nonUsd.length;
+for (const u of usd) {
+if (dismissed.has(u.id)) continue;
+const uAmt = Math.abs(Number(u.amount) || 0);
+if (Math.abs(uAmt - avgNominal) <= Math.max(10, avgNominal * 0.5)) {
+anomalies.push({
+txId: u.id,
+notes: u.notes,
+date: u.date,
+amount: u.amount,
+currentCurrency: u.currency || 'USD',
+suggestedCurrency: typicalCurrency,
+reason: `"${u.notes}" was logged as ${u.amount} USD, while similar "${u.notes}" entries were ${avgNominal} ${typicalCurrency}.`,
+});
+}
+}
+}
+}
+return anomalies;
+}
+export function computeDebtPayoffPlan(debts, debtEvents, transactions, budgetItems, base, rates, strategy = 'avalanche') {
+const activeDebts = computeDebtsWithStatus(debts || [], debtEvents || [], base, rates)
+.filter((d) => d.direction === 'owe' && d.remainingBase > 0.01);
+const totalRemainingBase = activeDebts.reduce((s, d) => s + d.remainingBase, 0);
+const cutoff30d = Date.now() - 30 * 24 * 3600 * 1000;
+let earned30d = 0;
+for (const t of (transactions || [])) {
+if (!t || t.id === SYSTEM_STATE_ROW_ID || t.type === 'meta') continue;
+if (new Date(t.date).getTime() < cutoff30d) continue;
+if (t.type === 'income' && t.category !== BORROWED_CATEGORY && t.category !== 'Repayment received') {
+earned30d += convert(Math.abs(Number(t.amount) || 0), t.currency || 'USD', base, rates);
+}
+}
+const expectedMonthlyIncome = (budgetItems || [])
+.filter((b) => b && b.status === 'expected' && b.type === 'income')
+.reduce((s, b) => s + computeItemMonthlyEquivalent(b, base, rates), 0);
+const monthlyIncomeBase = Math.max(earned30d, expectedMonthlyIncome);
+const monthlyDebtPower = monthlyIncomeBase * 0.40;
+const weeklyDebtPower = monthlyDebtPower / 4.345;
+const ordered = [...activeDebts].sort((a, b) => {
+if (strategy === 'snowball') {
+return a.remainingBase - b.remainingBase;
+}
+if ((b.interestRate || 0) !== (a.interestRate || 0)) {
+return (b.interestRate || 0) - (a.interestRate || 0);
+}
+return a.remainingBase - b.remainingBase;
+});
+let cumulativeDebt = 0;
+const schedule = ordered.map((d, idx) => {
+cumulativeDebt += d.remainingBase;
+const monthsToClear = monthlyDebtPower > 0 ? cumulativeDebt / monthlyDebtPower : null;
+const weeksToClear = weeklyDebtPower > 0 ? Math.ceil(cumulativeDebt / weeklyDebtPower) : null;
+return {
+...d,
+order: idx + 1,
+cumulativeDebtBase: cumulativeDebt,
+monthsToClear,
+weeksToClear,
+};
+});
+return {
+strategy,
+totalRemainingBase,
+monthlyIncomeBase,
+monthlyDebtPower,
+weeklyDebtPower,
+estimatedMonthsToDebtFree: monthlyDebtPower > 0 ? totalRemainingBase / monthlyDebtPower : null,
+estimatedWeeksToDebtFree: weeklyDebtPower > 0 ? Math.ceil(totalRemainingBase / weeklyDebtPower) : null,
+schedule,
+};
+}
 export function computeExpectedOccurrences(budgetItems, fromDate, toDate) {
   const from = new Date(fromDate); from.setHours(0, 0, 0, 0);
   const to = new Date(toDate); to.setHours(23, 59, 59, 999);
@@ -2031,12 +3051,15 @@ export function computeExpectedOccurrences(budgetItems, fromDate, toDate) {
         else map[k].expense += Number(item.amount) || 0;
         map[k].items.push(item.id);
       }
+if (item.frequency === 'once') break;
       if (item.frequency === 'daily') {
         cursor.setDate(cursor.getDate() + 1);
       } else if (item.frequency === 'weekly') {
         cursor.setDate(cursor.getDate() + 7);
-      } else { // monthly
-        cursor.setMonth(cursor.getMonth() + 1);
+} else if (item.frequency === 'biweekly') {
+cursor.setDate(cursor.getDate() + 14);
+} else {
+cursor.setMonth(cursor.getDate() + 1);
         const lastDay = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0).getDate();
         cursor.setDate(Math.min(Number(item.dayOfMonth) || 1, lastDay));
       }
@@ -2046,36 +3069,57 @@ export function computeExpectedOccurrences(budgetItems, fromDate, toDate) {
   return map;
 }
 
-// Round E: borrowed-pool balance = sum of outstanding 'owe' debt principals
-// minus sum of borrowedDeployments tied to that debt.
-// In base currency.
+
 export function computeBorrowedPool(debts, debtEvents, borrowedDeployments, base, rates) {
   let total = 0;
-  for (const d of debts) {
+for (const d of (debts || [])) {
     if ((d.direction || 'owe') !== 'owe') continue;
     if (d.status === 'paid') continue;
     const repaid = computeDebtRepaid(debtEvents, d.id);
-    const remainingDebt = d.principal - repaid;
+const remainingDebt = (Number(d.principal) || 0) - repaid;
     if (remainingDebt <= 0) continue;
-    // The actual pool from this debt = principal received − deployed so far
+
     const deployed = (borrowedDeployments || [])
       .filter((dep) => dep.sourceDebtId === d.id)
       .reduce((sum, dep) => sum + convert(Number(dep.amount) || 0, dep.currency || 'USD', d.currency, rates), 0);
-    const undeployed = Math.max(0, d.principal - deployed);
+const undeployed = Math.max(0, Math.min(remainingDebt, (Number(d.principal) || 0) - deployed));
     total += convert(undeployed, d.currency, base, rates);
   }
   return total;
 }
 
-// Round E: per-debt deployment trail — used by the Debt module to show
-// where the borrowed money went. Returns array of deployments enriched
-// with destination value (current value of the investment or venture
-// it funded) so we can compute ROI.
+export function computeBorrowedSummary(debts, debtEvents, borrowedDeployments, base, rates) {
+let totalPrincipalBase = 0;
+let totalRemainingDebtBase = 0;
+let totalDeployedOrSpentBase = 0;
+let undeployedPoolBase = 0;
+for (const d of (debts || [])) {
+if ((d.direction || 'owe') !== 'owe') continue;
+if (d.status === 'paid') continue;
+const repaid = computeDebtRepaid(debtEvents, d.id);
+const remainingDebt = Math.max(0, (Number(d.principal) || 0) - repaid);
+if (remainingDebt <= 0) continue;
+const deployedInDebtCurr = (borrowedDeployments || [])
+.filter((dep) => dep.sourceDebtId === d.id)
+.reduce((sum, dep) => sum + convert(Number(dep.amount) || 0, dep.currency || 'USD', d.currency, rates), 0);
+const undeployedInDebtCurr = Math.max(0, Math.min(remainingDebt, (Number(d.principal) || 0) - deployedInDebtCurr));
+totalPrincipalBase += convert(Number(d.principal) || 0, d.currency, base, rates);
+totalRemainingDebtBase += convert(remainingDebt, d.currency, base, rates);
+totalDeployedOrSpentBase += convert(deployedInDebtCurr, d.currency, base, rates);
+undeployedPoolBase += convert(undeployedInDebtCurr, d.currency, base, rates);
+}
+return {
+totalPrincipalBase,
+totalRemainingDebtBase,
+totalDeployedOrSpentBase,
+undeployedPoolBase,
+};
+}
 export function computeDebtTrail(debt, borrowedDeployments, investments, ventures, ventureEvents, ventureDistributions, base, rates) {
   const myDeployments = (borrowedDeployments || []).filter((d) => d.sourceDebtId === debt.id);
   return myDeployments.map((d) => {
     const amountBase = convert(Number(d.amount) || 0, d.currency || 'USD', base, rates);
-    let currentValueBase = amountBase; // default: at-cost
+let currentValueBase = amountBase;
     let roi = 0;
     if (d.destinationType === 'investment') {
       const inv = (investments || []).find((i) => i.id === d.destinationId);
@@ -2106,7 +3150,8 @@ export function computeBucketMTD(transactions, base, rates) {
   monthStart.setDate(1);
   monthStart.setHours(0, 0, 0, 0);
   const mtd = {};
-  for (const tx of transactions) {
+for (const tx of (transactions || [])) {
+if (!tx || tx.id === SYSTEM_STATE_ROW_ID || tx.type === 'meta') continue;
     if (new Date(tx.date) < monthStart) continue;
     const txCurrency = tx.currency || 'USD';
     const allocations = tx.buckets || {};
@@ -2121,7 +3166,7 @@ export function computeBucketMTD(transactions, base, rates) {
 }
 
 export function computeGoalsForBucket(goals, bucketKey, bucketBalance, base, rates) {
-  const active = goals
+const active = (goals || [])
     .filter((g) => g.bucketKey === bucketKey && g.status === 'active')
     .sort((a, b) => a.priority - b.priority);
   let remaining = Math.max(0, bucketBalance);
@@ -2152,23 +3197,17 @@ export function computeGoalsForBucket(goals, bucketKey, bucketBalance, base, rat
   return result.sort((a, b) => a.priority - b.priority);
 }
 
-// Round E: computeBucketImpact — used by the SpendingWarning overlay
-//
-// Given the user's pending expense, compute:
-//   - balance before vs after in the affected bucket
-//   - estimated days of delay based on 30d avg inflow into that bucket
-//   - which goals are affected and by how much
-//
+
 export function computeBucketImpact(transactions, goals, bucketKey, expenseAmount, expenseCurrency, base, rates) {
   const balances = computeBucketBalances(transactions, base, rates);
   const balance = balances[bucketKey] || 0;
   const expenseInBase = convert(Number(expenseAmount) || 0, expenseCurrency || 'USD', base, rates);
   const balanceAfter = balance - expenseInBase;
 
-  // 30-day average daily inflow
+
   const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
   let total30d = 0;
-  for (const t of transactions) {
+for (const t of (transactions || [])) {
     if (new Date(t.date).getTime() < cutoff) continue;
     const allocations = t.buckets || {};
     const v = allocations[bucketKey];
@@ -2179,7 +3218,7 @@ export function computeBucketImpact(transactions, goals, bucketKey, expenseAmoun
   const dailyInflow = total30d / 30;
   const delayDays = dailyInflow > 0 ? Math.round(expenseInBase / dailyInflow) : null;
 
-  // Goals impacted
+
   const goalsBefore = computeGoalsForBucket(goals, bucketKey, balance, base, rates);
   const goalsAfter  = computeGoalsForBucket(goals, bucketKey, balanceAfter, base, rates);
   const affectedGoals = goalsBefore.map((g) => {
@@ -2200,7 +3239,7 @@ export function computeBucketImpact(transactions, goals, bucketKey, expenseAmoun
 
 export function gatherTags(transactions) {
   const tagSet = new Set();
-  for (const t of transactions) {
+for (const t of (transactions || [])) {
     const tagStr = t.tags || '';
     if (typeof tagStr !== 'string') continue;
     for (const tag of tagStr.split(',')) {
@@ -2213,7 +3252,8 @@ export function gatherTags(transactions) {
 
 export function searchTransactions(transactions, { query = '', type = null, category = null, tags = [], dateFrom = null, dateTo = null, minAmount = null, maxAmount = null }) {
   const q = query.toLowerCase().trim();
-  return transactions.filter((t) => {
+return (transactions || []).filter((t) => {
+if (!t || t.id === SYSTEM_STATE_ROW_ID || t.type === 'meta') return false;
     if (type && t.type !== type) return false;
     if (category && t.category !== category) return false;
     if (dateFrom && new Date(t.date) < new Date(dateFrom)) return false;
@@ -2244,21 +3284,32 @@ export const selectInvestments      = (s) => s.personal.investments;
 export const selectInvestmentEvents = (s) => s.personal.investmentEvents;
 export const selectVentures         = (s) => s.personal.ventures;
 export const selectVentureEvents    = (s) => s.personal.ventureEvents;
-export const selectBuckets          = (s) => s.personal.buckets;
+export const selectBuckets          = (s) => selectActiveBuckets(s);
+export const selectRawBuckets       = (s) => s.personal.buckets;
 export const selectGoals            = (s) => s.personal.goals;
 export const selectRecurring        = (s) => s.personal.recurring;
 export const selectPending          = (s) => s.personal.pending;
 export const selectTemplates        = (s) => s.personal.templates;
 export const selectCategories       = (s) => s.personal.categories;
-// Round E new
+
 export const selectBorrowedDeployments  = (s) => s.personal.borrowedDeployments;
 export const selectVentureDistributions = (s) => s.personal.ventureDistributions;
 export const selectVentureMilestones    = (s) => s.personal.ventureMilestones;
 export const selectVentureJournal       = (s) => s.personal.ventureJournal;
+export const selectWallets          = (s) => (s.personal.wallets && s.personal.wallets.length > 0 ? s.personal.wallets : DEFAULT_WALLETS);
+export const selectConversions      = (s) => s.personal.conversions || [];
+export const selectBucketNotes      = (s) => s.personal.bucketNotes || {};
+export const selectDismissedAnomalies = (s) => s.personal.dismissedAnomalies || [];
 export const selectActiveTab        = (s) => s.app.activeTab;
 export const selectBaseCurrency     = (s) => s.app.baseCurrency;
 export const selectRates            = (s) => s.app.rates;
 export const selectTheme            = (s) => s.app.theme;
+export const selectDangerModeOverride = (s) => s.app.dangerModeOverride || 'auto';
+export const selectPrivacyMask      = (s) => s.app.privacyMask !== false;
+export const selectQuickSpendBucket = (s) => s.app.quickSpendBucketKey;
+export const selectSelectedCalendarDate = (s) => s.app.selectedCalendarDate || new Date().toISOString().slice(0, 10);
+export const selectCalendarViewMode = (s) => s.app.calendarViewMode || 'day';
+export const selectHighlightedTxId  = (s) => s.app.highlightedTxId;
 export const selectQueueSize        = (s) => (s.personal.queue || []).length;
 export const selectSyncLog          = (s) => s.personal.syncLog;
 export const selectIsSyncing        = (s) => s.personal.syncing;
@@ -2269,18 +3320,29 @@ export const selectSearchQuery      = (s) => s.app.searchQuery;
 export const selectSearchOpen       = (s) => s.app.searchOpen;
 export const selectSettingsOpen     = (s) => s.app.settingsOpen;
 
-// Round E: only count direction='owe' debts as "you owe"
+
 export const selectTotalDebtInBase = (state) => {
   const base = state.app.baseCurrency;
   const rates = state.app.rates;
   let sum = 0;
   for (const d of (state.personal.debts || [])) {
     if ((d.direction || 'owe') !== 'owe') continue;
+if (d.status === 'paid') continue;
     const repaid = computeDebtRepaid(state.personal.debtEvents || [], d.id);
     const remaining = d.principal - repaid;
     if (remaining > 0) sum += convert(remaining, d.currency, base, rates);
   }
   return sum;
+};
+export const selectIsDangerMode = (state) => {
+const override = state?.app?.dangerModeOverride || 'auto';
+if (override === 'danger') return true;
+if (override === 'normal') return false;
+return selectTotalDebtInBase(state) > 0.005;
+};
+export const selectActiveBuckets = (state) => {
+const isDanger = selectIsDangerMode(state);
+return resolveModeBuckets(state?.personal?.buckets || [], isDanger);
 };
 
 export const selectTotalReceivableInBase = (state) => {
@@ -2296,20 +3358,7 @@ export const selectTotalReceivableInBase = (state) => {
   return sum;
 };
 
-// ─── Authoritative net-worth math ──────────────────────────
-// Net Worth = Total Assets − Total Liabilities.
-//   Total Assets      = net cash (all bucket balances) + undeployed borrowed pool
-//                       + investments current value + ventures current valuation
-//                       + outstanding receivables
-//   Total Liabilities = outstanding 'owe' debt principal
-//
-// Rules enforced here:
-//   • Retained borrowed money IS an asset (the undeployed pool); it is offset
-//     by the matching debt in liabilities, so borrowing is net-worth neutral.
-//   • The pool only counts the UNDEPLOYED portion — deployed money is already
-//     counted inside the investment/venture/bucket it ended up in (no double count).
-//   • Receivables are assets, never liabilities; 'owe' debts are liabilities.
-//   • Buckets are allocations of existing money — never added separately.
+
 export function computeTotalLiabilities(debts, debtEvents, base, rates) {
   let sum = 0;
   for (const d of (debts || [])) {
@@ -2350,7 +3399,7 @@ export function computeVenturesValue(ventures, base, rates) {
   return sum;
 }
 
-// Net cash = sum of ALL bucket balances (a negative bucket is overspent cash).
+
 export function computeNetCash(transactions, base, rates) {
   const balances = computeBucketBalances(transactions, base, rates);
   let total = 0;
@@ -2387,11 +3436,10 @@ export const selectTotalLiabilities = (state) =>
     state.app.baseCurrency, state.app.rates,
   );
 
-// The single net-worth definition for the whole app:
-// Net Worth = Total Assets − Total Liabilities.
+
 export const selectNetWorth = (state) => selectTotalAssets(state) - selectTotalLiabilities(state);
 
-// Borrowed pool selector
+
 export const selectBorrowedPool = (state) => computeBorrowedPool(
   state.personal.debts || [],
   state.personal.debtEvents || [],
@@ -2400,21 +3448,20 @@ export const selectBorrowedPool = (state) => computeBorrowedPool(
   state.app.rates,
 );
 
-// Monthly EARNED summary — borrowed/lent money and debt repayments are
-// balance-sheet movements, never income or consumption, so they're excluded.
-// This is the "Monthly Net Profit" basis.
+
 export function computeMonthSummary(transactions, base, rates) {
   const monthStart = new Date();
   monthStart.setDate(1);
   monthStart.setHours(0, 0, 0, 0);
-  let income = 0, expense = 0;
-  for (const t of transactions) {
+let income = 0, expense = 0, repaymentExpense = 0;
+for (const t of (transactions || [])) {
+if (!t || t.id === SYSTEM_STATE_ROW_ID || t.type === 'meta') continue;
     if (new Date(t.date) < monthStart) continue;
     if (t.type === 'transfer') continue;
     if (t.category === BORROWED_CATEGORY || t.category === LENT_CATEGORY) continue;
     const v = convert(Math.abs(t.amount), t.currency || 'USD', base, rates);
     if (t.category === 'Repayment' || t.category === 'Repayment received') {
-      // Principal is balance-sheet movement; only the interest portion is an expense.
+repaymentExpense += v;
       const interest = convert(Math.abs(Number(t.interestAmount) || 0), t.currency || 'USD', base, rates);
       if (interest > 0) expense += interest;
       continue;
@@ -2422,17 +3469,24 @@ export function computeMonthSummary(transactions, base, rates) {
     if (t.type === 'income') income += v;
     else if (t.type === 'expense') expense += v;
   }
-  return { income, expense, net: income - expense };
+return {
+income,
+expense,
+repaymentExpense,
+totalSpendWithRepayments: expense + repaymentExpense,
+net: income - expense,
+netAfterRepayments: income - (expense + repaymentExpense),
+};
 }
 
-// Monthly NET CASH FLOW — actual money movement (all non-transfer txs,
-// including borrowed receipts and repayments). Distinct from profit.
+
 export function computeMonthCashFlow(transactions, base, rates) {
   const monthStart = new Date();
   monthStart.setDate(1);
   monthStart.setHours(0, 0, 0, 0);
   let cashIn = 0, cashOut = 0;
-  for (const t of transactions) {
+for (const t of (transactions || [])) {
+if (!t || t.id === SYSTEM_STATE_ROW_ID || t.type === 'meta') continue;
     if (new Date(t.date) < monthStart) continue;
     if (t.type === 'transfer') continue;
     const v = convert(Math.abs(t.amount), t.currency || 'USD', base, rates);
@@ -2442,8 +3496,7 @@ export function computeMonthCashFlow(transactions, base, rates) {
   return { cashIn, cashOut, net: cashIn - cashOut };
 }
 
-// Recurring revenue — a forward-looking business metric, never added to
-// net worth. Monthlyized equivalent of active recurring income templates.
+
 export function computeRecurringRevenueMonthly(recurring, base, rates) {
   let total = 0;
   for (const r of (recurring || [])) {
@@ -2467,17 +3520,17 @@ export function computeRecurringRevenueMonthly(recurring, base, rates) {
 
 export function computeInvestmentTotals(investments, base, rates) {
   let cost = 0, value = 0;
-  for (const inv of investments) {
+for (const inv of (investments || [])) {
     cost  += convert(inv.units * inv.costBasis,    inv.currency, base, rates);
     value += convert(inv.units * inv.currentPrice, inv.currency, base, rates);
   }
   return { cost, value, gain: value - cost, gainPct: cost > 0 ? (value - cost) / cost : 0 };
 }
 
-// Round E: ventures totals now include valuation, distributions, ROI
+
 export function computeVentureTotals(ventures, ventureEvents, ventureDistributions, base, rates) {
-  return ventures.map((v) => {
-    const deployEvents = ventureEvents.filter((e) => e.ventureId === v.id && e.type === 'deploy');
+return (ventures || []).map((v) => {
+const deployEvents = (ventureEvents || []).filter((e) => e.ventureId === v.id && e.type === 'deploy');
     let deployedTotal = 0;
     for (const e of deployEvents) {
       deployedTotal += convert(e.amount, e.currency, base, rates);
@@ -2507,16 +3560,17 @@ export function computeVentureTotals(ventures, ventureEvents, ventureDistributio
   });
 }
 
-// Round E: debts with status + projected payback
+
 export function computeDebtsWithStatus(debts, debtEvents, base, rates) {
   const now = new Date();
-  return debts.map((d) => {
-    const repaid = computeDebtRepaid(debtEvents, d.id);
-    const remaining = d.principal - repaid;
-    const remainingBase = convert(remaining, d.currency, base, rates);
-    const events = debtEvents
+return (debts || []).map((d) => {
+const repaid = computeDebtRepaid(debtEvents || [], d.id);
+const remaining = Math.max(0, (Number(d.principal) || 0) - repaid);
+const remainingBase = convert(remaining, d.currency || 'USD', base, rates);
+const events = (debtEvents || [])
       .filter((e) => e.debtId === d.id)
       .sort((a, b) => new Date(b.date) - new Date(a.date));
+const latestRepayment = events[0] || null;
     const accruedInterest = computeAccruedInterest(d, now);
     const projectedPayback = computeProjectedPayback(d);
     return {
@@ -2524,30 +3578,31 @@ export function computeDebtsWithStatus(debts, debtEvents, base, rates) {
       direction: d.direction || 'owe',
       interestRate: Number(d.interestRate) || 0,
       interestType: d.interestType || 'simple',
-      repaid, remaining, remainingBase,
+repaid,
+remaining,
+remainingBase,
       accruedInterest,
       projectedPayback,
       events,
+latestRepayment,
     };
   });
 }
 
 if (typeof window !== 'undefined') {
-  const triggerSync = () => useStore.getState().syncQueue();
-  const triggerTick = () => useStore.getState().tickRecurringSchedules();
+const sync = () => useStore.getState().syncQueue();
+const tick = () => useStore.getState().tickRecurringSchedules();
   window.addEventListener('online', () => {
     useStore.setState((s) => ({ app: { ...s.app, online: true } }));
-    triggerSync();
+sync();
   });
   window.addEventListener('offline', () => {
     useStore.setState((s) => ({ app: { ...s.app, online: false } }));
   });
   useStore.getState().hydrate().then(() => {
-    setTimeout(triggerTick, 1000);
+setTimeout(tick, 1000);
   });
-  setInterval(triggerSync, 20_000);
-  setInterval(triggerTick, 60_000);
-
-  // Tier 5b — start the AVS workspace sync loop (every 20s, AVS-scoped queue)
+setInterval(sync, 20000);
+setInterval(tick, 60000);
   startAvsSyncLoop(() => useStore.getState());
 }

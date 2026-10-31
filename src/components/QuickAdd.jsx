@@ -1,4 +1,4 @@
-// src/components/QuickAdd.jsx — Round E
+
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -8,10 +8,11 @@ import {
 import {
   useStore, selectRates, selectBaseCurrency, selectEditingTxId, selectTransactions,
   selectCategories, selectTemplates, selectBuckets, selectDebts, selectGoals,
-  gatherTags, computeBucketImpact, buildCategoryToBucket,
+selectQuickSpendBucket, selectIsDangerMode, selectWallets, selectBorrowedPool,
+gatherTags, computeBucketImpact, buildCategoryToBucket, autoSplitIncome,
   BORROWED_CATEGORY, LENT_CATEGORY,
 } from '../store/useStore';
-import { CURRENCIES, formatMoney } from '../lib/currency';
+import { CURRENCIES, formatMoney, formatCompact } from '../lib/currency';
 import DateTimePicker from './DateTimePicker';
 import TagInput from './TagInput';
 import SpendingWarning from './SpendingWarning';
@@ -28,75 +29,96 @@ export default function QuickAdd() {
   const [section, setSection] = useState('quick');
   const [type, setType] = useState('expense');
   const [amount, setAmount] = useState('');
-  const [currency, setCurrency] = useState('USD');
+const [currency, setCurrency] = useState('HTG');
   const [category, setCategory] = useState('');
+const [walletId, setWalletId] = useState('w_moncash');
   const [notes, setNotes] = useState('');
   const [tags, setTags] = useState([]);
   const [date, setDate] = useState(() => new Date().toISOString());
 
-  // Round E: borrow/lend extras
+const [incomeAllocMode, setIncomeAllocMode] = useState('split');
+const [singleIncomeBucket, setSingleIncomeBucket] = useState('warChest');
+const [customIncomeSplit, setCustomIncomeSplit] = useState({});
+const [expenseBucketOverride, setExpenseBucketOverride] = useState('');
   const [counterparty, setCounterparty] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [sourceBucketKey, setSourceBucketKey] = useState('operations');
   const [interestRate, setInterestRate] = useState('');
   const [interestType, setInterestType] = useState('simple');
-  // Advanced split (hidden by default for Lent)
+
   const [advancedSplit, setAdvancedSplit] = useState(false);
   const [bucketSplit, setBucketSplit] = useState({});
 
-  // Foldable sections
+
   const [showDate, setShowDate] = useState(false);
   const [showTags, setShowTags] = useState(false);
 
-  // Name autocomplete
   const [showSuggestions, setShowSuggestions] = useState(false);
   const notesRef = useRef(null);
 
-  // Recurring-specific
+
   const [recFrequency, setRecFrequency] = useState('monthly');
   const [recInterval, setRecInterval] = useState(1);
   const [recDayOfMonth, setRecDayOfMonth] = useState(new Date().getDate());
 
-  // Template-specific
   const [tplName, setTplName] = useState('');
 
-  // Round E: spending warning state
+
   const [warningOpen, setWarningOpen] = useState(false);
   const [pendingImpact, setPendingImpact] = useState(null);
   const [pendingTxData, setPendingTxData] = useState(null);
   const [pendingWarningBucket, setPendingWarningBucket] = useState(null);
 
-  // Borrowed-money classification modal
+
   const [borrowModalOpen, setBorrowModalOpen] = useState(false);
   const [pendingBorrowData, setPendingBorrowData] = useState(null);
 
-  // Income split modal (pre-toggled "yes")
+
   const [incomeSplitOpen, setIncomeSplitOpen] = useState(false);
   const [pendingIncomeData, setPendingIncomeData] = useState(null);
 
   const addTransaction    = useStore((s) => s.addTransaction);
   const updateTransaction = useStore((s) => s.updateTransaction);
   const setEditingTx      = useStore((s) => s.setEditingTx);
+const setQuickSpendBucket = useStore((s) => s.setQuickSpendBucket);
   const addRecurring      = useStore((s) => s.addRecurring);
   const addTemplate       = useStore((s) => s.addTemplate);
   const useTemplate       = useStore((s) => s.useTemplate);
   const recordBorrowedDeployment = useStore((s) => s.recordBorrowedDeployment);
 
-  const editingId  = useStore(selectEditingTxId);
-  const transactions = useStore(selectTransactions);
-  const categories = useStore(selectCategories);
-  const templates  = useStore(selectTemplates);
-  const buckets    = useStore(selectBuckets);
-  const debts      = useStore(selectDebts);
-  const goals      = useStore(selectGoals);
-  const baseCurrency = useStore(selectBaseCurrency);
-  const rates      = useStore(selectRates);
+const editingId        = useStore(selectEditingTxId);
+const quickSpendBucket = useStore(selectQuickSpendBucket);
+const isDangerMode     = useStore(selectIsDangerMode);
+const transactions     = useStore(selectTransactions);
+const categories       = useStore(selectCategories);
+const templates        = useStore(selectTemplates);
+const buckets          = useStore(selectBuckets);
+const wallets          = useStore(selectWallets);
+const borrowedPool     = useStore(selectBorrowedPool);
+const debts            = useStore(selectDebts);
+const goals            = useStore(selectGoals);
+const baseCurrency     = useStore(selectBaseCurrency);
+const rates            = useStore(selectRates);
 
   const editingTx = editingId ? transactions.find((t) => t.id === editingId) : null;
   const isEditing = !!editingTx;
 
   const allTags = useMemo(() => gatherTags(transactions), [transactions]);
   const categoryMap = useMemo(() => buildCategoryToBucket(categories), [categories]);
+const sourceBuckets = useMemo(() => {
+return buckets
+.filter((b) => b.enabled !== false)
+.sort((a, b) => a.order - b.order);
+}, [buckets]);
+useEffect(() => {
+if (quickSpendBucket) {
+setOpen(true);
+setSection('quick');
+setType('expense');
+setCurrency(baseCurrency || 'HTG');
+setExpenseBucketOverride(quickSpendBucket);
+}
+}, [quickSpendBucket, baseCurrency]);
 
   const availableCategories = useMemo(() => {
     return categories
@@ -134,7 +156,7 @@ export default function QuickAdd() {
       if (lower.startsWith(q) && lower !== q && !seen.has(lower)) {
         seen.add(lower);
         matches.push({
-          notes: n, amount: t.amount, currency: t.currency, category: t.category, type: t.type,
+notes: n, amount: t.amount, currency: t.currency, category: t.category, type: t.type, walletId: t.walletId,
         });
         if (matches.length >= 5) break;
       }
@@ -157,6 +179,7 @@ export default function QuickAdd() {
       setAmount(String(editingTx.amount));
       setCurrency(editingTx.currency || 'USD');
       setCategory(editingTx.category);
+setWalletId(editingTx.walletId || 'w_moncash');
       setNotes(editingTx.notes || '');
       setDate(editingTx.date || new Date().toISOString());
       const tagList = (editingTx.tags || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -167,10 +190,15 @@ export default function QuickAdd() {
   const reset = () => {
     setType('expense');
     setAmount('');
-    setCurrency('USD');
+setCurrency(baseCurrency || 'HTG');
     setCategory(availableCategories[0]?.name || '');
+setWalletId('w_moncash');
     setNotes(''); setTags([]);
     setDate(new Date().toISOString());
+setIncomeAllocMode('split');
+setSingleIncomeBucket('warChest');
+setCustomIncomeSplit({});
+setExpenseBucketOverride('');
     setCounterparty(''); setDueDate('');
     setSourceBucketKey('operations');
     setInterestRate(''); setInterestType('simple');
@@ -183,6 +211,7 @@ export default function QuickAdd() {
   const close = () => {
     setOpen(false);
     setEditingTx(null);
+setQuickSpendBucket(null);
     setSection('quick');
     setWarningOpen(false);
     setPendingImpact(null);
@@ -196,6 +225,7 @@ export default function QuickAdd() {
     setAmount(String(sug.amount));
     setCurrency(sug.currency || 'USD');
     setCategory(sug.category);
+if (sug.walletId) setWalletId(sug.walletId);
     if (sug.type !== type) setType(sug.type);
     setShowSuggestions(false);
   };
@@ -216,15 +246,32 @@ export default function QuickAdd() {
   const isLent     = type === 'expense' && category === LENT_CATEGORY;
   const isSpecial  = isBorrowed || isLent;
 
-  // Build the tx payload (used by both immediate save and confirmed-save-after-warning)
+const expenseBucketKey = useMemo(() => {
+if (type !== 'expense' || isLent) return null;
+if (expenseBucketOverride) return expenseBucketOverride;
+return categoryMap[category] || 'operations';
+}, [type, isLent, category, categoryMap, expenseBucketOverride]);
+const expenseBucket = useMemo(() => {
+if (!expenseBucketKey || expenseBucketKey === 'borrowedPool') return null;
+return sourceBuckets.find((b) => b.key === expenseBucketKey) || null;
+}, [expenseBucketKey, sourceBuckets]);
   const buildTxData = () => {
     const v = parseFloat(amount);
     const data = {
       type, amount: v, currency, category,
+walletId,
       notes: notes.trim(),
       tags: tags.filter(Boolean).join(','),
       date,
     };
+if (type === 'expense' && !isLent && expenseBucketOverride) {
+data.sourceBucketKey = expenseBucketOverride;
+if (expenseBucketOverride === 'borrowedPool') {
+data.buckets = {};
+} else {
+data.buckets = { [expenseBucketOverride]: -Math.abs(v) };
+}
+}
     if (isBorrowed) {
       data.counterparty = counterparty.trim();
       if (dueDate) data.dueDate = new Date(dueDate + 'T00:00:00').toISOString();
@@ -236,7 +283,7 @@ export default function QuickAdd() {
       data.counterparty = counterparty.trim();
       if (dueDate) data.dueDate = new Date(dueDate + 'T00:00:00').toISOString();
       if (advancedSplit && Object.keys(bucketSplit).length > 0) {
-        // Filter out empty entries and ensure they sum (best-effort)
+
         const cleaned = {};
         for (const [k, val] of Object.entries(bucketSplit)) {
           const n = Number(val) || 0;
@@ -250,16 +297,11 @@ export default function QuickAdd() {
     return data;
   };
 
-  // Determine the affected bucket for an expense (for SpendingWarning)
-  const expenseBucketKey = useMemo(() => {
-    if (type !== 'expense' || isLent) return null;
-    return categoryMap[category] || 'operations';
-  }, [type, isLent, category, categoryMap]);
-
-  const expenseBucket = useMemo(() => {
-    if (!expenseBucketKey) return null;
-    return buckets.find((b) => b.key === expenseBucketKey) || null;
-  }, [expenseBucketKey, buckets]);
+const liveIncomePreview = useMemo(() => {
+const v = parseFloat(amount) || 0;
+if (v <= 0) return {};
+return autoSplitIncome(v, sourceBuckets);
+}, [amount, sourceBuckets]);
 
   const submit = (e) => {
     e?.preventDefault?.();
@@ -267,8 +309,7 @@ export default function QuickAdd() {
     if (!v || v <= 0) return;
     if (isSpecial && !counterparty.trim()) return;
 
-    // Recurring + template paths never trigger the warning — they don't commit
-    // immediately. Edit path skips it too (too disruptive).
+
     if (section !== 'quick' || isEditing) {
       const data = buildTxData();
       if (section === 'quick') {
@@ -294,8 +335,7 @@ export default function QuickAdd() {
       return;
     }
 
-    // Round E: check for goal-conflict warning on regular expenses
-    if (type === 'expense' && !isLent && expenseBucketKey) {
+if (type === 'expense' && !isLent && expenseBucketKey && expenseBucketKey !== 'borrowedPool') {
       const hasActiveGoal = goals.some(
         (g) => g.bucketKey === expenseBucketKey && g.status === 'active'
       );
@@ -313,16 +353,32 @@ export default function QuickAdd() {
       }
     }
 
-    // New borrowed money must be classified before it is recorded:
-    // has it already been spent, or is it still available?
+
     if (isBorrowed) {
       setPendingBorrowData(buildTxData());
       setBorrowModalOpen(true);
       return;
     }
 
-    // Regular income: ask whether to split across buckets (pre-toggled yes)
+
     if (type === 'income') {
+if (incomeAllocMode === 'single') {
+const txData = buildTxData();
+addTransaction({ ...txData, buckets: { [singleIncomeBucket]: v } });
+close();
+return;
+}
+if (incomeAllocMode === 'custom') {
+const cleaned = {};
+for (const [k, val] of Object.entries(customIncomeSplit)) {
+const n = Number(val) || 0;
+if (n > 0) cleaned[k] = n;
+}
+const txData = buildTxData();
+addTransaction({ ...txData, buckets: Object.keys(cleaned).length > 0 ? cleaned : liveIncomePreview });
+close();
+return;
+}
       setPendingIncomeData(buildTxData());
       setIncomeSplitOpen(true);
       return;
@@ -332,34 +388,33 @@ export default function QuickAdd() {
     close();
   };
 
-  // ─── Income split commits ────────────────────────────────
+
   const closeIncomeSplit = () => {
     setIncomeSplitOpen(false);
     setPendingIncomeData(null);
   };
 
-  // Yes (default): auto-split across buckets by configured percentages.
+
   const commitIncomeSplit = () => {
-    addTransaction(pendingIncomeData);
+addTransaction({ ...pendingIncomeData, buckets: autoSplitIncome(pendingIncomeData.amount, sourceBuckets) });
     closeIncomeSplit();
     close();
   };
 
-  // No: keep the whole amount in a single bucket.
+
   const commitIncomeSingle = (bucketKey) => {
     addTransaction({ ...pendingIncomeData, buckets: { [bucketKey]: pendingIncomeData.amount } });
     closeIncomeSplit();
     close();
   };
 
-  // ─── Borrowed-money classification commits ───────────────
+
   const closeBorrowModal = () => {
     setBorrowModalOpen(false);
     setPendingBorrowData(null);
   };
 
-  // Already spent: record the liability + history, but the cash is gone,
-  // so the pool is immediately marked fully deployed as 'spent'.
+
   const commitBorrowedSpent = () => {
     const tx = addTransaction(pendingBorrowData);
     if (tx?.linkedDebtId) {
@@ -376,16 +431,14 @@ export default function QuickAdd() {
     close();
   };
 
-  // Still available, kept in the borrowed pool: assets + liabilities both
-  // rise by the principal — net worth unchanged.
+
   const commitBorrowedPool = () => {
     addTransaction(pendingBorrowData);
     closeBorrowModal();
     close();
   };
 
-  // Still available, allocated across buckets: the tx credits the buckets
-  // and matching deployment rows zero out the pool (no double counting).
+
   const commitBorrowedAllocate = (allocMap) => {
     const tx = addTransaction({ ...pendingBorrowData, buckets: allocMap });
     if (tx?.linkedDebtId) {
@@ -396,7 +449,7 @@ export default function QuickAdd() {
           sourceDebtId: tx.linkedDebtId,
           destinationType: 'bucket',
           destinationId: bucketKey,
-          destinationLabel: buckets.find((b) => b.key === bucketKey)?.name || bucketKey,
+destinationLabel: sourceBuckets.find((b) => b.key === bucketKey)?.name || bucketKey,
           amount: amt,
           currency: pendingBorrowData.currency,
           note: 'Borrowed money allocated to bucket',
@@ -422,11 +475,6 @@ export default function QuickAdd() {
   const cfg = CURRENCIES[currency] || CURRENCIES.USD;
   const valid = amount && parseFloat(amount) > 0 && (!isSpecial || counterparty.trim().length > 0);
 
-  const sourceBuckets = useMemo(() => {
-    return buckets
-      .filter((b) => b.enabled !== false)
-      .sort((a, b) => a.order - b.order);
-  }, [buckets]);
 
   return (
     <>
@@ -526,7 +574,7 @@ export default function QuickAdd() {
                         : 'surface text-muted'
                     }`}
                   >
-                    <ArrowUpRight size={15} /> Expense
+<ArrowUpRight size={15} /> Expense / Spending
                   </button>
                   <button
                     type="button" onClick={() => setType('income')}
@@ -571,6 +619,31 @@ export default function QuickAdd() {
                   </div>
                 </div>
 
+{/* ─── WHERE DOES THIS HAPPEN? (6 WALLETS PICKER) ─────── */}
+<div>
+<div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-2 px-1">
+Where does it happen? (Account / Place)
+</div>
+<div className="grid grid-cols-3 gap-1.5">
+{wallets.map((w) => {
+const sel = walletId === w.id;
+return (
+<button
+key={w.id}
+type="button"
+onClick={() => setWalletId(w.id)}
+className={`px-2.5 py-2 rounded-xl border text-xs font-medium truncate transition-all ${
+sel
+? 'bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 border-transparent'
+: 'surface text-muted'
+}`}
+>
+{w.name} ({w.currency})
+</button>
+);
+})}
+</div>
+</div>
                 <div>
                   <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-2 px-1">
                     {section === 'recurring' ? 'Schedule name' : section === 'template' ? 'Description' : 'Name / description'}
@@ -582,7 +655,7 @@ export default function QuickAdd() {
                       onChange={(e) => { setNotes(e.target.value); setShowSuggestions(true); }}
                       onFocus={() => setShowSuggestions(true)}
                       onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-                      placeholder={section === 'quick' ? 'e.g., Coffee at Kafe Anaïs' : 'Name this'}
+placeholder={section === 'quick' ? 'e.g., Salary, Groceries, Plan Natcom' : 'Name this'}
                       className="w-full px-4 py-3 rounded-xl surface border outline-none focus:ring-2 focus:ring-[var(--text)]/10 text-sm"
                     />
                     <AnimatePresence>
@@ -643,7 +716,147 @@ export default function QuickAdd() {
                   </div>
                 </div>
 
-                {/* Round E: Borrow / Lend extra fields */}
+{/* ─── INLINE BUCKET PICKER FOR EXPENSES (INCL. BORROWED CAPITAL POOL) ─── */}
+{type === 'expense' && !isLent && section === 'quick' && (
+<div className="surface border rounded-2xl p-4">
+<div className="flex items-center justify-between mb-2">
+<span className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">
+Spend from which bucket / pool?
+</span>
+{expenseBucketOverride && (
+<button
+type="button"
+onClick={() => setExpenseBucketOverride('')}
+className="text-[10px] text-muted underline"
+>
+Reset to default
+</button>
+)}
+</div>
+<div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+{sourceBuckets.map((b) => {
+const activeKey = expenseBucketOverride || categoryMap[category] || 'operations';
+const sel = activeKey === b.key;
+return (
+<button
+key={b.key}
+type="button"
+onClick={() => setExpenseBucketOverride(b.key)}
+className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-left text-xs transition-all ${
+sel
+? 'bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 border-transparent font-medium'
+: 'bg-[var(--bg)] border-transparent text-muted'
+}`}
+>
+<span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: b.color }} />
+<span className="truncate">{b.name}</span>
+</button>
+);
+})}
+{borrowedPool > 0.01 && (
+<button
+type="button"
+onClick={() => setExpenseBucketOverride('borrowedPool')}
+className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-left text-xs transition-all ${
+expenseBucketOverride === 'borrowedPool'
+? 'bg-amber-600 text-white border-transparent font-medium'
+: 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-400'
+}`}
+>
+<span className="w-2 h-2 rounded-full shrink-0 bg-amber-500" />
+<span className="truncate">Borrowed Pool ({formatCompact(borrowedPool, baseCurrency)})</span>
+</button>
+)}
+</div>
+</div>
+)}
+{/* ─── INLINE INCOME SPLIT CHOOSER ─── */}
+{type === 'income' && !isBorrowed && section === 'quick' && (
+<div className="surface border rounded-2xl p-4 space-y-3">
+<div className="flex items-center justify-between">
+<span className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">
+How should this income be allocated?
+</span>
+<span className="text-[10px] text-accent-income font-semibold">
+{isDangerMode ? 'Danger Mode (40/25/20/10/5)' : 'Normal Mode (50/30/10/5/5)'}
+</span>
+</div>
+<div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-[var(--bg)]">
+{[
+{ id: 'split',  label: 'Auto-Split' },
+{ id: 'single', label: '1 Bucket (No Split)' },
+{ id: 'custom', label: 'Custom Split' },
+].map((m) => (
+<button
+key={m.id}
+type="button"
+onClick={() => setIncomeAllocMode(m.id)}
+className={`py-2 rounded-lg text-xs font-medium transition-all ${
+incomeAllocMode === m.id
+? 'bg-[var(--surface)] shadow-sm text-[var(--text)]'
+: 'text-muted'
+}`}
+>
+{m.label}
+</button>
+))}
+</div>
+{incomeAllocMode === 'split' && (
+<div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 pt-1">
+{sourceBuckets.map((b) => (
+<div key={b.key} className="bg-[var(--bg)] rounded-xl px-2.5 py-2 text-xs flex items-center justify-between">
+<span className="truncate text-muted">{b.name.split(' ')[0]} ({b.percentage}%)</span>
+<span className="num font-medium text-accent-income">
++{formatMoney(liveIncomePreview[b.key] || 0, currency)}
+</span>
+</div>
+))}
+</div>
+)}
+{incomeAllocMode === 'single' && (
+<div className="grid grid-cols-2 gap-1.5 pt-1">
+{sourceBuckets.map((b) => {
+const sel = singleIncomeBucket === b.key;
+return (
+<button
+key={b.key}
+type="button"
+onClick={() => setSingleIncomeBucket(b.key)}
+className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border text-left text-xs transition-all ${
+sel
+? 'bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 border-transparent font-medium'
+: 'bg-[var(--bg)] border-transparent'
+}`}
+>
+<span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: b.color }} />
+<span className="truncate">100% → {b.name}</span>
+</button>
+);
+})}
+</div>
+)}
+{incomeAllocMode === 'custom' && (
+<div className="space-y-2 pt-1">
+{sourceBuckets.map((b) => (
+<div key={b.key} className="flex items-center gap-2 text-xs">
+<span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: b.color }} />
+<span className="flex-1 truncate">{b.name}</span>
+<input
+type="number"
+step="0.01"
+min="0"
+value={customIncomeSplit[b.key] ?? ''}
+onChange={(e) => setCustomIncomeSplit({ ...customIncomeSplit, [b.key]: e.target.value })}
+placeholder={String(liveIncomePreview[b.key] || 0)}
+className="w-28 px-2.5 py-1.5 rounded-lg bg-[var(--bg)] outline-none text-right num"
+/>
+</div>
+))}
+</div>
+)}
+</div>
+)}
+{/* Borrow / Lend extra fields */}
                 <AnimatePresence>
                   {isSpecial && section === 'quick' && (
                     <motion.div
@@ -674,7 +887,7 @@ export default function QuickAdd() {
                             type="text" value={counterparty} onChange={(e) => setCounterparty(e.target.value)}
                             placeholder={isBorrowed ? 'Who lent you this?' : 'Who is borrowing?'}
                             list="counterparty-list"
-                            className="w-full px-4 py-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] outline-none text-sm focus:ring-2 focus:ring-[var(--text)]/10"
+className="w-full px-4 py-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] outline-none text-sm"
                           />
                           <datalist id="counterparty-list">
                             {counterpartySuggestions.map((c) => (
@@ -693,25 +906,22 @@ export default function QuickAdd() {
                                 type="number" inputMode="decimal" step="0.01" min="0"
                                 value={interestRate} onChange={(e) => setInterestRate(e.target.value)}
                                 placeholder="0"
-                                className="w-full px-4 py-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] outline-none text-sm num focus:ring-2 focus:ring-[var(--text)]/10"
+className="w-full px-4 py-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] outline-none text-sm num"
                               />
                               <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-[var(--bg)] border border-[var(--border)]">
                                 {[
                                   { id: 'simple',   label: 'Simple' },
                                   { id: 'compound', label: 'Compound' },
-                                ].map((m) => {
-                                  const sel = interestType === m.id;
-                                  return (
-                                    <button
-                                      key={m.id} type="button" onClick={() => setInterestType(m.id)}
-                                      className={`px-3 rounded-lg text-[11px] font-medium ${
-                                        sel ? 'bg-[var(--surface)] shadow-sm' : 'text-muted'
-                                      }`}
-                                    >
-                                      {m.label}
-                                    </button>
-                                  );
-                                })}
+].map((m) => (
+<button
+key={m.id} type="button" onClick={() => setInterestType(m.id)}
+className={`px-3 rounded-lg text-[11px] font-medium ${
+interestType === m.id ? 'bg-[var(--surface)] shadow-sm' : 'text-muted'
+}`}
+>
+{m.label}
+</button>
+))}
                               </div>
                             </div>
                           </div>
@@ -783,15 +993,10 @@ export default function QuickAdd() {
                           </label>
                           <input
                             type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)}
-                            className="w-full px-4 py-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] outline-none text-sm num focus:ring-2 focus:ring-[var(--text)]/10"
+className="w-full px-4 py-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] outline-none text-sm num"
                           />
                         </div>
 
-                        <p className="text-[10px] text-muted px-1">
-                          {isBorrowed
-                            ? 'This will appear as Borrowed Capital on Home — separate from your cash. Deploy it into investments or ventures from the Wealth tab.'
-                            : 'Money leaves your bucket and an entry appears in the Debt tab under Owed to you.'}
-                        </p>
                       </div>
                     </motion.div>
                   )}
@@ -850,11 +1055,7 @@ export default function QuickAdd() {
                     {section === 'recurring' && <><Repeat size={15} /> Save schedule</>}
                     {section === 'template' && <><Bookmark size={15} /> Save template</>}
                   </button>
-                  {isSpecial && !counterparty.trim() && (
-                    <p className="text-[10px] text-accent-expense text-center mt-2">
-                      {isBorrowed ? 'Who did you borrow from?' : 'Who did you lend to?'}
-                    </p>
-                  )}
+
                 </div>
               </div>
             </div>
@@ -862,7 +1063,7 @@ export default function QuickAdd() {
         )}
       </AnimatePresence>
 
-      {/* Round E: SpendingWarning overlay */}
+
       <SpendingWarning
         open={warningOpen}
         impact={pendingImpact}
@@ -874,7 +1075,7 @@ export default function QuickAdd() {
         onCancel={cancelWarning}
       />
 
-      {/* Borrowed money: classify before recording */}
+
       <BorrowedMoneyModal
         open={borrowModalOpen}
         amount={pendingBorrowData?.amount || 0}
@@ -887,7 +1088,7 @@ export default function QuickAdd() {
         onCancel={closeBorrowModal}
       />
 
-      {/* Income: split across buckets? (pre-toggled yes) */}
+
       <IncomeSplitModal
         open={incomeSplitOpen}
         amount={pendingIncomeData?.amount || 0}
@@ -901,15 +1102,18 @@ export default function QuickAdd() {
   );
 }
 
-// ─── IncomeSplitModal ──────────────────────────────────────
-// Shown when registering income. "Split across buckets?" defaults to YES.
+
 function IncomeSplitModal({ open, amount, currency, buckets, onSplit, onSingle, onCancel }) {
-  const [choice, setChoice] = useState('split'); // 'split' | 'single'
-  const [bucketKey, setBucketKey] = useState('operations');
+const [choice, setChoice] = useState('split');
+const [bucketKey, setBucketKey] = useState(buckets[0]?.key || 'warChest');
 
   useEffect(() => {
-    if (open) { setChoice('split'); setBucketKey('operations'); }
-  }, [open]);
+if (open) {
+setChoice('split');
+setBucketKey(buckets[0]?.key || 'warChest');
+}
+}, [open, buckets]);
+const splitPreview = useMemo(() => autoSplitIncome(amount, buckets), [amount, buckets]);
 
   return (
     <AnimatePresence>
@@ -926,9 +1130,9 @@ function IncomeSplitModal({ open, amount, currency, buckets, onSplit, onSingle, 
             className="w-full max-w-md surface border rounded-2xl p-5 space-y-4"
           >
             <div>
-              <h3 className="font-display text-lg">Split this income?</h3>
+<h3 className="font-display text-lg">Split this income across your buckets?</h3>
               <p className="text-sm text-muted mt-1">
-                Split {formatMoney(amount, currency)} across your buckets by their configured percentages?
+Choose whether to auto-split {formatMoney(amount, currency)} across your 5 active buckets or keep it in a single bucket.
               </p>
             </div>
 
@@ -940,7 +1144,13 @@ function IncomeSplitModal({ open, amount, currency, buckets, onSplit, onSingle, 
                 }`}
               >
                 <div className="text-sm font-medium">Yes, split across buckets</div>
-                <div className="text-[11px] text-muted">Auto-allocates by your bucket percentages.</div>
+<div className="text-[11px] text-muted mt-1 flex flex-wrap gap-x-2 gap-y-1">
+{buckets.map((b) => (
+<span key={b.key} className="num">
+{b.name.split(' ')[0]} ({b.percentage}%): <strong>{formatMoney(splitPreview[b.key] || 0, currency)}</strong>
+</span>
+))}
+</div>
               </button>
 
               <button
@@ -949,8 +1159,8 @@ function IncomeSplitModal({ open, amount, currency, buckets, onSplit, onSingle, 
                   choice === 'single' ? 'border-accent-income bg-accent-income/5' : 'border-[var(--border)] bg-[var(--bg)]'
                 }`}
               >
-                <div className="text-sm font-medium">No, keep in one bucket</div>
-                <div className="text-[11px] text-muted">The full amount goes to a single bucket.</div>
+<div className="text-sm font-medium">No, keep 100% in one bucket</div>
+<div className="text-[11px] text-muted">Assigns the entire {formatMoney(amount, currency)} to a single pocket.</div>
               </button>
             </div>
 
@@ -958,7 +1168,7 @@ function IncomeSplitModal({ open, amount, currency, buckets, onSplit, onSingle, 
               <div className="flex items-center gap-2 border-t border-[var(--border)] pt-3">
                 <label className="text-[10px] uppercase tracking-[0.1em] text-muted font-semibold whitespace-nowrap">Bucket</label>
                 <select value={bucketKey} onChange={(e) => setBucketKey(e.target.value)}
-                  className="flex-1 px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm focus:ring-2 focus:ring-[var(--border)]">
+className="flex-1 px-3 py-2 rounded-lg bg-[var(--bg)] outline-none text-sm">
                   {buckets.map((b) => (
                     <option key={b.key} value={b.key}>{b.name}</option>
                   ))}
@@ -974,7 +1184,7 @@ function IncomeSplitModal({ open, amount, currency, buckets, onSplit, onSingle, 
               <button type="button"
                 onClick={() => choice === 'split' ? onSplit() : onSingle(bucketKey)}
                 className="flex-1 px-4 py-2.5 rounded-xl bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 text-sm font-medium">
-                {choice === 'split' ? 'Split' : 'Keep in one bucket'}
+{choice === 'split' ? 'Split income' : 'Keep in 1 bucket'}
               </button>
             </div>
           </motion.div>
@@ -984,13 +1194,9 @@ function IncomeSplitModal({ open, amount, currency, buckets, onSplit, onSingle, 
   );
 }
 
-// ─── BorrowedMoneyModal ────────────────────────────────────
-// Shown when recording new borrowed money. The user must answer:
-// "Has this borrowed money already been spent, or is it still available?"
-// Borrowed money is never earned income; the full debt always stays in
-// Total Liabilities either way.
+
 function BorrowedMoneyModal({ open, amount, currency, counterparty, buckets, onSpent, onKeepPool, onAllocate, onCancel }) {
-  const [mode, setMode] = useState(null); // null | 'available'
+const [mode, setMode] = useState(null);
   const [alloc, setAlloc] = useState({});
   const [showAlloc, setShowAlloc] = useState(false);
 
@@ -1020,21 +1226,19 @@ function BorrowedMoneyModal({ open, amount, currency, counterparty, buckets, onS
               <p className="text-sm text-muted mt-1">
                 Has this {formatMoney(amount, currency)}{counterparty ? ` from ${counterparty}` : ''} already been spent, or is it still available for use?
               </p>
-              <p className="text-[11px] text-muted mt-2">
-                Either way it's not income — the full {formatMoney(amount, currency)} stays in your liabilities until repaid.
-              </p>
+
             </div>
 
             <div className="space-y-2">
               <button
-                type="button" onClick={() => { setMode('available'); }}
+type="button" onClick={() => setMode('available')}
                 className={`w-full text-left px-4 py-3 rounded-xl border transition-colors ${
                   mode === 'available' ? 'border-accent-income bg-accent-income/5' : 'border-[var(--border)] bg-[var(--bg)]'
                 }`}
               >
                 <div className="text-sm font-medium">Still available</div>
                 <div className="text-[11px] text-muted">
-                  Adds {formatMoney(amount, currency)} to your available funds and the same to your debts — net worth unchanged.
+Adds {formatMoney(amount, currency)} to your Borrowed Capital Pool and records the liability.
                 </div>
               </button>
 
@@ -1044,7 +1248,7 @@ function BorrowedMoneyModal({ open, amount, currency, counterparty, buckets, onS
               >
                 <div className="text-sm font-medium">Already spent</div>
                 <div className="text-[11px] text-muted">
-                  Records the debt only — no cash added. Your net worth drops by the amount consumed.
+Records the debt liability without adding available cash.
                 </div>
               </button>
             </div>
@@ -1064,20 +1268,18 @@ function BorrowedMoneyModal({ open, amount, currency, counterparty, buckets, onS
                           value={alloc[b.key] ?? ''}
                           onChange={(e) => setAlloc((a) => ({ ...a, [b.key]: e.target.value }))}
                           placeholder="0.00"
-                          className="w-28 px-3 py-1.5 rounded-lg bg-[var(--bg)] outline-none text-sm num text-right focus:ring-2 focus:ring-[var(--border)]"
+className="w-28 px-3 py-1.5 rounded-lg bg-[var(--bg)] outline-none text-sm num text-right"
                         />
                       </div>
                     ))}
-                    <div className={`text-[11px] text-right ${allocValid ? 'text-accent-income' : 'text-muted'}`}>
-                      Allocated {formatMoney(allocTotal, currency)} of {formatMoney(amount, currency)}
-                    </div>
+
                   </div>
                 )}
                 <div className="flex gap-2">
                   {!showAlloc && (
                     <button type="button" onClick={onKeepPool}
                       className="flex-1 px-4 py-2.5 rounded-xl bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 text-sm font-medium">
-                      Keep as borrowed pool
+Keep in pool
                     </button>
                   )}
                   {!showAlloc ? (
@@ -1144,7 +1346,7 @@ function FoldableSection({ icon: Icon, label, preview, open, onToggle, children 
   );
 }
 
-function RecurringFields({ frequency, setFrequency, interval, setInterval, dayOfMonth, setDayOfMonth }) {
+function RecurringFields({ frequency, setFrequency, dayOfMonth, setDayOfMonth }) {
   const FREQS = [
     { id: 'daily',   label: 'Daily' },
     { id: 'weekly',  label: 'Weekly' },

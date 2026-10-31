@@ -1,921 +1,970 @@
-// src/modules/CalendarView.jsx
+
 import { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
-} from 'recharts';
-import {
-  ChevronLeft, ChevronRight, ArrowDownLeft, ArrowUpRight,
-  Calendar as CalIcon, BarChart3, TrendingUp, TrendingDown, Minus,
+ChevronLeft, ChevronRight, Calendar as CalendarIcon, Plus, ArrowDownLeft,
+ArrowUpRight, ArrowLeftRight, CheckCircle2, AlertTriangle, Wallet,
+Banknote, Smartphone, Globe, CreditCard, UserCheck, Heart, Trash2, Check, X, Sparkles,
 } from 'lucide-react';
 import {
   useStore,
-  selectTransactions, selectBuckets, selectBaseCurrency, selectRates,
-  selectBudgetItems, computeExpectedOccurrences,
+selectTransactions, selectConversions, selectWallets, selectBuckets,
+selectBaseCurrency, selectRates, selectSelectedCalendarDate, selectCalendarViewMode,
+computePeriodLedger,
 } from '../store/useStore';
-import { convert, formatMoney, formatCompact } from '../lib/currency';
-import { fadeUp, ease, isSameDay } from '../lib/util';
-import { useWorkspaceFilter, applyDateFilter } from '../lib/workspaceFilter';
+import { CURRENCIES, convert, formatMoney, formatCompact } from '../lib/currency';
+import { fadeUp, ease } from '../lib/util';
 import { useTxActions } from '../components/TxActions';
+import CompareModule from './Compare';
 
-// Round D: Calendar tab has a top toggle — Month view (original calendar
-// grid) or Compare view (period-over-period analytics, formerly its own
-// tab in Round C).
+const WALLET_ICONS = {
+Banknote,
+Smartphone,
+Globe,
+CreditCard,
+UserCheck,
+Heart,
+Wallet,
+};
 
-const WEEK = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+function toDateKey(d) {
+const dt = new Date(d);
+const y = dt.getFullYear();
+const m = String(dt.getMonth() + 1).padStart(2, '0');
+const day = String(dt.getDate()).padStart(2, '0');
+return `${y}-${m}-${day}`;
+}
+function getWeekBounds(dateStr) {
+const d = new Date(`${dateStr}T12:00:00`);
+const day = d.getDay(); // 0 = Sun, 1 = Mon
+const diffToMon = day === 0 ? -6 : 1 - day;
+const start = new Date(d);
+start.setDate(d.getDate() + diffToMon);
+const end = new Date(start);
+end.setDate(start.getDate() + 6);
+return { startStr: toDateKey(start), endStr: toDateKey(end) };
+}
+function getMonthBounds(dateStr) {
+const d = new Date(`${dateStr}T12:00:00`);
+const start = new Date(d.getFullYear(), d.getMonth(), 1);
+const end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+return { startStr: toDateKey(start), endStr: toDateKey(end) };
+}
+function formatNotepadDateHeader(dateStr, viewMode) {
+const d = new Date(`${dateStr}T12:00:00`);
+if (isNaN(d)) return dateStr;
+if (viewMode === 'day') {
+const frDays = ['Dimanche', 'Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi'];
+const weekdayFr = frDays[d.getDay()];
+const monthEn = d.toLocaleDateString('en-US', { month: 'long' });
+const dayNum = d.getDate();
+const suffix =
+dayNum % 10 === 1 && dayNum !== 11 ? 'st' :
+dayNum % 10 === 2 && dayNum !== 12 ? 'nd' :
+dayNum % 10 === 3 && dayNum !== 13 ? 'rd' : 'th';
+return `${weekdayFr}, ${monthEn} ${dayNum}${suffix} ${d.getFullYear()}`;
+}
+if (viewMode === 'week') {
+const { startStr, endStr } = getWeekBounds(dateStr);
+const s = new Date(`${startStr}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+const e = new Date(`${endStr}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+return `Week · ${s} – ${e}`;
+}
+if (viewMode === 'month') {
+return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+}
+return 'Compare Periods';
+}
 
 export default function CalendarView() {
-  const [view, setView] = useState('month'); // 'month' | 'compare'
+const transactions      = useStore(selectTransactions);
+const conversions       = useStore(selectConversions);
+const wallets           = useStore(selectWallets);
+const buckets           = useStore(selectBuckets);
+const baseCurrency      = useStore(selectBaseCurrency);
+const rates             = useStore(selectRates);
+const selectedDate      = useStore(selectSelectedCalendarDate);
+const viewMode          = useStore(selectCalendarViewMode);
+const setSelectedDate   = useStore((s) => s.setSelectedCalendarDate);
+const setViewMode       = useStore((s) => s.setCalendarViewMode);
+const addTransaction    = useStore((s) => s.addTransaction);
+const addConversion     = useStore((s) => s.addConversion);
+const removeConversion  = useStore((s) => s.removeConversion);
+const updateWalletBalance = useStore((s) => s.updateWalletBalance);
+const reconcileWalletDifference = useStore((s) => s.reconcileWalletDifference);
+const [calendarGridOpen, setCalendarGridOpen] = useState(false);
+const [quickAddType, setQuickAddType] = useState(null); // 'income' | 'expense' | 'conversion' | null
+const { bind, sheet } = useTxActions();
+const { startDateStr, endDateStr } = useMemo(() => {
+if (viewMode === 'week') {
+const { startStr, endStr } = getWeekBounds(selectedDate);
+return { startDateStr: startStr, endDateStr: endStr };
+}
+if (viewMode === 'month') {
+const { startStr, endStr } = getMonthBounds(selectedDate);
+return { startDateStr: startStr, endDateStr: endStr };
+}
+return { startDateStr: selectedDate, endDateStr: selectedDate };
+}, [selectedDate, viewMode]);
+const ledger = useMemo(
+() => computePeriodLedger(transactions, conversions, wallets, baseCurrency, rates, startDateStr, endDateStr),
+[transactions, conversions, wallets, baseCurrency, rates, startDateStr, endDateStr]
+);
+const stepDate = (dir) => {
+const d = new Date(`${selectedDate}T12:00:00`);
+if (viewMode === 'week') d.setDate(d.getDate() + dir * 7);
+else if (viewMode === 'month') d.setMonth(d.getMonth() + dir);
+else d.setDate(d.getDate() + dir);
+setSelectedDate(toDateKey(d));
+};
+const periodLabel = viewMode === 'day' ? 'day' : viewMode === 'week' ? 'week' : 'month';
+const netHTG = convert(ledger.netForPeriodBase, baseCurrency, 'HTG', rates);
+const netHTD = convert(ledger.netForPeriodBase, baseCurrency, 'HTD', rates);
+const netUSD = convert(ledger.netForPeriodBase, baseCurrency, 'USD', rates);
 
   return (
-    <main className="max-w-2xl mx-auto px-5 pt-4 pb-32">
-      <motion.section {...fadeUp} transition={{ duration: 0.5, ease }} className="mb-4">
-        <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-1">Calendar</div>
-        <h1 className="font-display text-4xl">Time machine</h1>
-      </motion.section>
+<main className="max-w-2xl mx-auto px-4 sm:px-5 pt-3 pb-32">
+{/* ─── TOP VIEW MODE SWITCHER (Day | Week | Month | Compare) ─── */}
+<div className="flex items-center justify-between gap-2 mb-3">
+<div className="grid grid-cols-4 gap-1 p-1 rounded-xl surface border flex-1">
+{[
+{ id: 'day',     label: 'Daily' },
+{ id: 'week',    label: 'Weekly' },
+{ id: 'month',   label: 'Monthly' },
+{ id: 'compare', label: 'Compare' },
+].map((m) => (
+<button
+key={m.id}
+type="button"
+onClick={() => setViewMode(m.id)}
+className={`py-1.5 rounded-lg text-xs font-medium transition-all ${
+viewMode === m.id
+? 'bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 shadow-sm'
+: 'text-muted hover:text-[var(--text)]'
+}`}
+>
+{m.label}
+</button>
+))}
+</div>
+</div>
 
-      {/* View toggle */}
-      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.04 }} className="mb-4">
-        <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-[var(--surface)]">
-          <button
-            onClick={() => setView('month')}
-            className={`flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-medium transition-all ${
-              view === 'month' ? 'bg-[var(--bg)] shadow-sm' : 'text-muted'
-            }`}
-          >
-            <CalIcon size={13} /> Month
-          </button>
-          <button
-            onClick={() => setView('compare')}
-            className={`flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-medium transition-all ${
-              view === 'compare' ? 'bg-[var(--bg)] shadow-sm' : 'text-muted'
-            }`}
-          >
-            <BarChart3 size={13} /> Compare
-          </button>
-        </div>
-      </motion.section>
+{viewMode === 'compare' ? (
+<CompareModule embedded />
+) : (
+<>
+{/* ─── NOTEPAD DATE HEADER BAR ─────────────────────────── */}
+<motion.section {...fadeUp} transition={{ duration: 0.35, ease }} className="mb-3">
+<div className="surface border rounded-2xl px-3.5 py-3 flex items-center justify-between gap-2">
+<button
+type="button"
+onClick={() => stepDate(-1)}
+className="w-8 h-8 rounded-xl bg-[var(--bg)] hover:bg-[var(--border)] flex items-center justify-center shrink-0"
+aria-label="Previous"
+>
+<ChevronLeft size={16} />
+</button>
 
-      <AnimatePresence mode="wait">
-        {view === 'month' ? (
-          <motion.div
-            key="month"
-            initial={{ opacity: 0, x: -8 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 8 }}
-            transition={{ duration: 0.2 }}
-          >
-            <MonthView />
-          </motion.div>
-        ) : (
-          <motion.div
-            key="compare"
-            initial={{ opacity: 0, x: 8 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -8 }}
-            transition={{ duration: 0.2 }}
-          >
-            <CompareView />
-          </motion.div>
-        )}
-      </AnimatePresence>
+<button
+type="button"
+onClick={() => setCalendarGridOpen((v) => !v)}
+className="flex-1 text-center min-w-0 group"
+>
+<div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold flex items-center justify-center gap-1">
+<CalendarIcon size={10} />
+<span>{viewMode.toUpperCase()} SHEET · TAP TO PICK DATE</span>
+</div>
+<div className="font-display text-xl sm:text-2xl truncate mt-0.5 group-hover:underline">
+{formatNotepadDateHeader(selectedDate, viewMode)}
+</div>
+</button>
+<div className="flex items-center gap-1 shrink-0">
+{selectedDate !== toDateKey(new Date()) && (
+<button
+type="button"
+onClick={() => setSelectedDate(toDateKey(new Date()))}
+className="px-2 py-1 rounded-lg bg-[var(--bg)] text-[10px] font-semibold text-muted hover:text-[var(--text)]"
+>
+Today
+</button>
+)}
+<button
+type="button"
+onClick={() => stepDate(1)}
+className="w-8 h-8 rounded-xl bg-[var(--bg)] hover:bg-[var(--border)] flex items-center justify-center"
+aria-label="Next"
+>
+<ChevronRight size={16} />
+</button>
+</div>
+</div>
+{/* Collapsible Mini Month Picker */}
+<AnimatePresence>
+{calendarGridOpen && (
+<motion.div
+initial={{ opacity: 0, height: 0 }}
+animate={{ opacity: 1, height: 'auto' }}
+exit={{ opacity: 0, height: 0 }}
+className="overflow-hidden mt-2"
+>
+<MiniMonthGrid
+selectedDate={selectedDate}
+transactions={transactions}
+onSelectDate={(dKey) => {
+setSelectedDate(dKey);
+setCalendarGridOpen(false);
+}}
+/>
+</motion.div>
+)}
+</AnimatePresence>
+</motion.section>
+{/* ─── 1. INCOME => (Compact Section) ──────────────────── */}
+<motion.section {...fadeUp} transition={{ duration: 0.4, ease, delay: 0.02 }} className="mb-3">
+<div className="surface border rounded-2xl p-3.5">
+<div className="flex items-center justify-between gap-2 mb-2">
+<div className="flex items-center gap-2">
+<span className="w-6 h-6 rounded-lg bg-accent-income/15 text-accent-income flex items-center justify-center">
+<ArrowDownLeft size={13} strokeWidth={2.4} />
+</span>
+<span className="font-display text-lg">Income ⇒</span>
+<span className="text-xs text-muted num">({ledger.incomeTxs.length})</span>
+</div>
+<div className="flex items-center gap-2">
+<span className="font-display text-lg num text-accent-income">
++{formatMoney(ledger.totalIncomeBase, baseCurrency)}
+</span>
+<button
+type="button"
+onClick={() => setQuickAddType(quickAddType === 'income' ? null : 'income')}
+className="px-2 py-1 rounded-lg bg-accent-income/10 text-accent-income text-[11px] font-medium flex items-center gap-1"
+>
+<Plus size={11} /> Add
+</button>
+</div>
+</div>
+{quickAddType === 'income' && (
+<InlineDayTxForm
+type="income"
+dateStr={endDateStr}
+wallets={wallets}
+buckets={buckets}
+defaultCurrency={baseCurrency}
+onSave={(payload) => {
+addTransaction(payload);
+setQuickAddType(null);
+}}
+onCancel={() => setQuickAddType(null)}
+/>
+)}
+{ledger.incomeTxs.length === 0 ? (
+<div className="text-xs text-muted py-1.5 px-1">
+No income logged for this {periodLabel}.
+</div>
+) : (
+<ul className="divide-y divide-[var(--border)]/60">
+{ledger.incomeTxs.map((tx) => {
+const w = wallets.find((x) => x.id === tx.walletId);
+return (
+<li
+key={tx.id}
+{...bind(tx)}
+className="py-2 px-1 flex items-center justify-between gap-2 text-xs cursor-pointer active:bg-[var(--bg)] rounded-lg"
+>
+<div className="min-w-0 flex-1">
+<div className="font-medium truncate">{tx.notes || tx.category}</div>
+<div className="text-[10px] text-muted flex items-center gap-1.5 mt-0.5">
+<span>{tx.category}</span>
+{w && (
+<span className="px-1.5 py-0.2 rounded bg-[var(--bg)] font-medium text-[var(--text)]">
+{w.name}
+</span>
+)}
+</div>
+</div>
+<div className="text-right num shrink-0">
+<div className="font-semibold text-accent-income">
++{formatMoney(tx.amount, tx.currency)}
+</div>
+</div>
+</li>
+);
+})}
+</ul>
+)}
+</div>
+</motion.section>
+{/* ─── 2. SPENDINGS => (Compact Section, incl. Debt Paid) ─── */}
+<motion.section {...fadeUp} transition={{ duration: 0.4, ease, delay: 0.04 }} className="mb-3">
+<div className="surface border rounded-2xl p-3.5">
+<div className="flex items-center justify-between gap-2 mb-2">
+<div className="flex items-center gap-2">
+<span className="w-6 h-6 rounded-lg bg-accent-expense/15 text-accent-expense flex items-center justify-center">
+<ArrowUpRight size={13} strokeWidth={2.4} />
+</span>
+<span className="font-display text-lg">Spendings ⇒</span>
+<span className="text-xs text-muted num">({ledger.spendingTxs.length})</span>
+</div>
+<div className="flex items-center gap-2">
+<span className="font-display text-lg num text-accent-expense">
+−{formatMoney(ledger.totalSpendingBase, baseCurrency)}
+</span>
+<button
+type="button"
+onClick={() => setQuickAddType(quickAddType === 'expense' ? null : 'expense')}
+className="px-2 py-1 rounded-lg bg-accent-expense/10 text-accent-expense text-[11px] font-medium flex items-center gap-1"
+>
+<Plus size={11} /> Add
+</button>
+</div>
+</div>
+{quickAddType === 'expense' && (
+<InlineDayTxForm
+type="expense"
+dateStr={endDateStr}
+wallets={wallets}
+buckets={buckets}
+defaultCurrency={baseCurrency}
+onSave={(payload) => {
+addTransaction(payload);
+setQuickAddType(null);
+}}
+onCancel={() => setQuickAddType(null)}
+/>
+)}
+{ledger.spendingTxs.length === 0 ? (
+<div className="text-xs text-muted py-1.5 px-1">
+No spendings logged for this {periodLabel}.
+</div>
+) : (
+<ul className="divide-y divide-[var(--border)]/60">
+{ledger.spendingTxs.map((tx) => {
+const w = wallets.find((x) => x.id === tx.walletId);
+const isDebtRepay = tx.category === 'Repayment';
+const bucketKey = Object.keys(tx.buckets || {})[0];
+return (
+<li
+key={tx.id}
+{...bind(tx)}
+className="py-2 px-1 flex items-center justify-between gap-2 text-xs cursor-pointer active:bg-[var(--bg)] rounded-lg"
+>
+<div className="min-w-0 flex-1">
+<div className="flex items-center gap-1.5">
+<span className="font-medium truncate">{tx.notes || tx.category}</span>
+{isDebtRepay && (
+<span className="text-[9px] px-1.5 py-0.5 rounded bg-accent-expense/15 text-accent-expense font-semibold shrink-0">
+Debt Paid
+</span>
+)}
+</div>
+<div className="text-[10px] text-muted flex items-center gap-1.5 mt-0.5">
+<span>{tx.category}</span>
+{w && (
+<span className="px-1.5 py-0.2 rounded bg-[var(--bg)] font-medium text-[var(--text)]">
+{w.name}
+</span>
+)}
+{bucketKey && (
+<span className="text-muted">· {bucketKey}</span>
+)}
+</div>
+</div>
+<div className="text-right num shrink-0">
+<div className="font-semibold text-accent-expense">
+−{formatMoney(tx.amount, tx.currency)}
+</div>
+</div>
+</li>
+);
+})}
+</ul>
+)}
+</div>
+</motion.section>
+{/* ─── 3. COMPACT 3-LINE SUMMARY STRIP ("These shouldn't be big, just make sure they are there") ─── */}
+<motion.section {...fadeUp} transition={{ duration: 0.4, ease, delay: 0.06 }} className="mb-4">
+<div className="surface border rounded-2xl divide-y divide-[var(--border)] text-xs overflow-hidden">
+{/* Row 1: Conversions => if Any (and place for the fees they took) */}
+<div className="px-3.5 py-2.5">
+<div className="flex items-center justify-between gap-2">
+<div className="flex items-center gap-1.5 text-muted">
+<ArrowLeftRight size={12} />
+<span className="font-medium text-[var(--text)]">Conversions ⇒</span>
+<span>
+{ledger.periodConversions.length === 0
+? 'None'
+: `${ledger.periodConversions.length} logged`}
+</span>
+{ledger.totalFeesBase > 0 && (
+<span className="text-accent-expense num font-medium">
+(Fees: −{formatCompact(ledger.totalFeesBase, baseCurrency)})
+</span>
+)}
+</div>
+<button
+type="button"
+onClick={() => setQuickAddType(quickAddType === 'conversion' ? null : 'conversion')}
+className="text-[11px] font-medium text-muted hover:text-[var(--text)] flex items-center gap-1"
+>
+<Plus size={11} /> Conversion / Fee
+</button>
+</div>
+{quickAddType === 'conversion' && (
+<div className="mt-2.5">
+<InlineConversionForm
+dateStr={endDateStr}
+wallets={wallets}
+onSave={(data) => {
+addConversion(data);
+setQuickAddType(null);
+}}
+onCancel={() => setQuickAddType(null)}
+/>
+</div>
+)}
+{ledger.periodConversions.length > 0 && (
+<div className="mt-2 space-y-1">
+{ledger.periodConversions.map((c) => {
+const fw = wallets.find((w) => w.id === c.fromWalletId);
+const tw = wallets.find((w) => w.id === c.toWalletId);
+return (
+<div key={c.id} className="flex items-center justify-between bg-[var(--bg)] rounded-lg px-2.5 py-1.5 text-[11px] num">
+<span className="truncate">
+{formatMoney(c.fromAmount, c.fromCurrency)} ({fw?.name || c.fromCurrency}) →{' '}
+<strong>{formatMoney(c.toAmount, c.toCurrency)}</strong> ({tw?.name || c.toCurrency})
+{c.feeAmount > 0 && (
+<span className="text-accent-expense ml-1.5">
+· Fee: −{formatMoney(c.feeAmount, c.feeCurrency)}
+</span>
+)}
+</span>
+<button
+type="button"
+onClick={() => removeConversion(c.id)}
+className="text-muted hover:text-accent-expense ml-2"
+>
+<X size={12} />
+</button>
+</div>
+);
+})}
+</div>
+)}
+</div>
+{/* Row 2: Total Money left for the day (ex: -$100 ht or +20 USD) */}
+<div className="px-3.5 py-2.5 flex items-center justify-between gap-2 bg-[var(--bg)]/40">
+<span className="font-medium text-muted">
+Total Money left for the {periodLabel}
+</span>
+<div className="text-right num flex items-center gap-2 flex-wrap justify-end">
+<span
+className={`font-display text-base font-semibold ${
+ledger.netForPeriodBase >= 0 ? 'text-accent-income' : 'text-accent-expense'
+}`}
+>
+{formatMoney(ledger.netForPeriodBase, baseCurrency, { sign: 'always' })}
+</span>
+<span className="text-[10px] text-muted">
+({formatMoney(netHTD, 'HTD', { sign: 'always' })} · {formatMoney(netUSD, 'USD', { sign: 'always' })})
+</span>
+</div>
+</div>
+{/* Row 3: Available total money left overall (counting today and previous days) */}
+<div className="px-3.5 py-2.5 flex items-center justify-between gap-2">
+<span className="font-medium text-muted">
+Available total money left overall
+</span>
+<span className="font-display text-base font-semibold num">
+{formatMoney(ledger.overallAvailableBase, baseCurrency)}
+</span>
+</div>
+</div>
+</motion.section>
+{/* ─── 4. BIG SECTION: "↳ Different places the money can be" (Wallets & Reconciler) ─── */}
+<motion.section {...fadeUp} transition={{ duration: 0.45, ease, delay: 0.08 }}>
+<WalletsReconcilerSection
+walletRecon={ledger.walletRecon}
+baseCurrency={baseCurrency}
+rates={rates}
+dateStr={endDateStr}
+buckets={buckets}
+onUpdateWallet={updateWalletBalance}
+onReconcile={reconcileWalletDifference}
+/>
+</motion.section>
+</>
+)}
+{sheet}
     </main>
   );
 }
 
 // ════════════════════════════════════════════════════════════════════
-// MONTH VIEW — the original calendar grid
+
 // ════════════════════════════════════════════════════════════════════
-function MonthView() {
-  const allTransactions = useStore(selectTransactions);
-  const filter = useWorkspaceFilter('personal');
-  const transactions = useMemo(
-    () => applyDateFilter(allTransactions, filter, 'date'),
-    [allTransactions, filter]
-  );
-  const budgetItems  = useStore(selectBudgetItems);
-  const confirmBudgetItem = useStore((s) => s.confirmBudgetItem);
-  const baseCurrency = useStore(selectBaseCurrency);
-  const rates        = useStore(selectRates);
+function WalletsReconcilerSection({
+walletRecon,
+baseCurrency,
+rates,
+dateStr,
+buckets,
+onUpdateWallet,
+onReconcile,
+}) {
+const [editingWalletId, setEditingWalletId] = useState(null);
+const [draftVal, setDraftVal] = useState('');
+const [draftCurr, setDraftCurr] = useState('HTG');
+const [reconcileBucket, setReconcileBucket] = useState('operations');
 
-  const [cursor, setCursor] = useState(() => {
-    const d = new Date(); d.setDate(1); d.setHours(0,0,0,0); return d;
-  });
-  const [selected, setSelected] = useState(() => new Date());
-
-  const days = useMemo(() => {
-    const year = cursor.getFullYear();
-    const month = cursor.getMonth();
-    const firstDay = new Date(year, month, 1);
-    const startOffset = firstDay.getDay();
-    const lastDate = new Date(year, month + 1, 0).getDate();
-    const cells = [];
-    for (let i = 0; i < startOffset; i++) cells.push(null);
-    for (let d = 1; d <= lastDate; d++) cells.push(new Date(year, month, d));
-    return cells;
-  }, [cursor]);
-
-  const dayMap = useMemo(() => {
-    const map = {};
-    for (const t of transactions) {
-      const d = new Date(t.date);
-      if (d.getFullYear() !== cursor.getFullYear() || d.getMonth() !== cursor.getMonth()) continue;
-      const key = d.getDate();
-      if (!map[key]) map[key] = { income: 0, expense: 0 };
-      const v = convert(Math.abs(t.amount), t.currency || 'USD', baseCurrency, rates);
-      if (t.type === 'income')  map[key].income  += v;
-      if (t.type === 'expense') map[key].expense += v;
-    }
-    return map;
-  }, [transactions, cursor, baseCurrency, rates]);
-
-  // Expected (budgeted) items → day-of-month map for the current month.
-  const expectedMap = useMemo(() => {
-    const year = cursor.getFullYear();
-    const month = cursor.getMonth();
-    const from = new Date(year, month, 1);
-    const to = new Date(year, month + 1, 0);
-    const occ = computeExpectedOccurrences(budgetItems, from, to);
-    const map = {};
-    for (const [k, v] of Object.entries(occ)) {
-      const d = new Date(`${k}T00:00:00`);
-      if (d.getFullYear() === year && d.getMonth() === month) map[d.getDate()] = v;
-    }
-    return map;
-  }, [budgetItems, cursor]);
-
-  const monthTotals = useMemo(() => {
-    return Object.values(dayMap).reduce(
-      (acc, d) => ({ income: acc.income + d.income, expense: acc.expense + d.expense }),
-      { income: 0, expense: 0 }
-    );
-  }, [dayMap]);
-
-  const selectedTxs = useMemo(() => {
-    return transactions
-      .filter((t) => isSameDay(new Date(t.date), selected))
-      .sort((a, b) => new Date(b.date) - new Date(a.date));
-  }, [transactions, selected]);
-
-  // Expected (budgeted) items for the selected day.
-  const selectedExpected = useMemo(() => {
-    const exp = expectedMap[selected.getDate()];
-    if (!exp) return [];
-    return exp.items
-      .map((id) => budgetItems.find((b) => b.id === id))
-      .filter(Boolean);
-  }, [expectedMap, selected, budgetItems]);
-
-  const canConfirm = selected <= new Date();
-
-  const monthLabel = cursor.toLocaleDateString('en', { month: 'long', year: 'numeric' });
-  const navMonth = (delta) => {
-    const next = new Date(cursor);
-    next.setMonth(next.getMonth() + delta);
-    setCursor(next);
+const startEdit = (w) => {
+setEditingWalletId(w.id);
+setDraftVal(String(w.effectiveBalance || 0));
+setDraftCurr(w.currency || 'HTG');
   };
 
-  const { bind, sheet } = useTxActions();
+const saveEdit = (wId) => {
+onUpdateWallet(wId, parseFloat(draftVal) || 0, draftCurr);
+setEditingWalletId(null);
+};
+const diffHTG = convert(Math.abs(walletRecon.differenceBase), baseCurrency, 'HTG', rates);
+const diffHTD = convert(Math.abs(walletRecon.differenceBase), baseCurrency, 'HTD', rates);
+const diffUSD = convert(Math.abs(walletRecon.differenceBase), baseCurrency, 'USD', rates);
 
   return (
-    <>
-      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.05 }}
-        className="grid grid-cols-2 gap-3 mb-4">
-        <div className="surface border rounded-2xl p-4">
-          <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">Inflow</div>
-          <div className="font-display text-2xl text-accent-income num mt-1">
-            +{formatMoney(monthTotals.income, baseCurrency)}
+<div className="surface border rounded-3xl p-4 sm:p-5 space-y-4">
+<div className="flex items-start justify-between gap-2">
+<div>
+<div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">
+↳ Different places the money can be
           </div>
+<h2 className="font-display text-2xl mt-0.5">Where Your Money Sits</h2>
+<p className="text-[11px] text-muted mt-0.5">
+Tap any account to enter today’s real balance. The system verifies if everything adds up.
+</p>
         </div>
-        <div className="surface border rounded-2xl p-4">
-          <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">Outflow</div>
-          <div className="font-display text-2xl text-accent-expense num mt-1">
-            −{formatMoney(monthTotals.expense, baseCurrency)}
-          </div>
+<div className="text-right shrink-0">
+<div className="text-[9px] uppercase tracking-wider text-muted font-semibold">Accounts Total</div>
+<div className="font-display text-2xl num">{formatMoney(walletRecon.totalWalletsBase, baseCurrency)}</div>
         </div>
-      </motion.section>
+</div>
 
-      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.1 }}
-        className="surface border rounded-2xl p-4 mb-5">
-        <div className="flex items-center justify-between mb-3">
-          <button onClick={() => navMonth(-1)}
-            className="w-8 h-8 rounded-lg hover:bg-[var(--bg)] flex items-center justify-center">
-            <ChevronLeft size={16} />
-          </button>
-          <div className="font-display text-xl">{monthLabel}</div>
-          <button onClick={() => navMonth(1)}
-            className="w-8 h-8 rounded-lg hover:bg-[var(--bg)] flex items-center justify-center">
-            <ChevronRight size={16} />
-          </button>
-        </div>
-
-        <div className="grid grid-cols-7 gap-1 mb-1">
-          {WEEK.map((w) => (
-            <div key={w} className="text-center text-[10px] text-muted font-medium uppercase tracking-wider py-1">
-              {w}
-            </div>
-          ))}
-        </div>
-
-        <div className="grid grid-cols-7 gap-1">
-          {days.map((d, i) => {
-            if (!d) return <div key={i} />;
-            const data = dayMap[d.getDate()];
-            const expected = expectedMap[d.getDate()];
-            const isToday = isSameDay(d, new Date());
-            const isSelected = isSameDay(d, selected);
-            const hasIncome  = data?.income  > 0;
-            const hasExpense = data?.expense > 0;
-            const hasExpectedIncome  = expected?.income  > 0;
-            const hasExpectedExpense = expected?.expense > 0;
-
-            return (
-              <motion.button
-                key={i}
-                whileTap={{ scale: 0.92 }}
-                onClick={() => setSelected(d)}
-                className={`relative aspect-square rounded-lg flex flex-col items-center justify-center transition-colors ${
-                  isSelected ? 'bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900'
-                  : isToday   ? 'bg-[var(--bg)] ring-1 ring-[var(--border)]'
-                  : 'hover:bg-[var(--bg)]'
-                }`}
-              >
-                {!isSelected && (hasIncome || hasExpense) && (
-                  <div className="absolute inset-0 rounded-lg overflow-hidden pointer-events-none">
-                    {hasIncome && <div className="absolute inset-0 bg-accent-income/10" />}
-                    {hasExpense && <div className="absolute inset-0 bg-accent-expense/10" />}
-                  </div>
-                )}
-                <span className="relative text-sm font-medium num">{d.getDate()}</span>
-                {(hasIncome || hasExpense || hasExpectedIncome || hasExpectedExpense) && (
-                  <div className="relative flex gap-0.5 mt-0.5">
-                    {hasIncome  && <span className="w-1 h-1 rounded-full bg-accent-income" />}
-                    {hasExpense && <span className="w-1 h-1 rounded-full bg-accent-expense" />}
-                    {hasExpectedIncome  && <span className="w-1 h-1 rounded-full bg-blue-500" />}
-                    {hasExpectedExpense && <span className="w-1 h-1 rounded-full bg-amber-400" />}
-                  </div>
-                )}
-              </motion.button>
-            );
-          })}
-        </div>
-      </motion.section>
-
-      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.15 }}>
-        <div className="flex items-baseline justify-between mb-3 px-1">
-          <div>
-            <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">
-              {selected.toLocaleDateString('en', { weekday: 'long' })}
-            </div>
-            <h2 className="font-display text-2xl">
-              {selected.toLocaleDateString('en', { month: 'long', day: 'numeric' })}
-            </h2>
-          </div>
-          <span className="text-[11px] text-muted">{selectedTxs.length} entries</span>
-        </div>
-
-        {/* Expected (budgeted) items — blue income / yellow expense */}
-        {selectedExpected.length > 0 && (
-          <div className="mb-3 space-y-2">
-            <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold px-1">
-              Expected · confirm when paid
-            </div>
-            {selectedExpected.map((item) => {
-              const isIncome = item.type === 'income';
-              return (
-                <div key={item.id}
-                  className="flex items-center gap-3 px-4 py-3 rounded-xl border border-dashed border-[var(--border)] bg-[var(--bg)]">
-                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
-                    isIncome ? 'bg-blue-500/10 text-blue-500' : 'bg-amber-400/10 text-amber-500'
-                  }`}>
-                    {isIncome ? <ArrowDownLeft size={16} /> : <ArrowUpRight size={16} />}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium truncate">{item.name}</div>
-                    <div className="text-[11px] text-muted truncate">
-                      {item.frequency} · {item.bucketKey}
+{/* 6 Wallets Grid (MonCash, NatCash, Wise, Meru, Marc's Account, Mom's Account) */}
+<div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+{walletRecon.wallets.map((w) => {
+const Icon = WALLET_ICONS[w.icon] || Wallet;
+const isEditing = editingWalletId === w.id;
+return (
+<div
+key={w.id}
+className="bg-[var(--bg)] border border-[var(--border)]/80 rounded-2xl p-3 transition-all"
+style={{ borderLeftWidth: 3, borderLeftColor: w.color }}
+>
+{!isEditing ? (
+<button
+type="button"
+onClick={() => startEdit(w)}
+className="w-full text-left flex items-center justify-between gap-2"
+>
+<div className="flex items-center gap-2.5 min-w-0">
+<div
+className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+style={{ backgroundColor: `${w.color}1f`, color: w.color }}
+>
+<Icon size={16} />
+</div>
+<div className="min-w-0">
+<div className="font-medium text-sm truncate flex items-center gap-1.5">
+<span>{w.name}</span>
+<span className="text-[10px] px-1.5 py-0.2 rounded bg-[var(--surface)] text-muted font-semibold">
+{w.currency}
+</span>
+</div>
+<div className="text-[10px] text-muted">
+{w.allowAnyCurrency ? 'Any currency · Tap to set' : 'Tap to update balance'}
+</div>
                     </div>
                   </div>
-                  <div className={`font-medium num text-sm ${isIncome ? 'text-blue-500' : 'text-amber-500'}`}>
-                    {isIncome ? '+' : '−'}{formatMoney(item.amount, item.currency)}
+<div className="text-right num shrink-0">
+<div className="font-display text-lg">
+{formatMoney(w.effectiveBalance, w.currency)}
+</div>
+{w.currency !== baseCurrency && (
+<div className="text-[10px] text-muted">
+≈ {formatCompact(w.balanceBase, baseCurrency)}
+</div>
+)}
                   </div>
-                  {canConfirm && (
+</button>
+) : (
+<div className="space-y-2">
+<div className="flex items-center justify-between text-xs font-semibold">
+<span>{w.name}</span>
+{w.allowAnyCurrency && (
+<div className="flex gap-1">
+{Object.keys(CURRENCIES).map((c) => (
+<button
+key={c}
+type="button"
+onClick={() => setDraftCurr(c)}
+className={`px-1.5 py-0.5 rounded text-[10px] ${
+draftCurr === c ? 'bg-ink-900 text-white dark:bg-ink-50 dark:text-ink-900' : 'bg-[var(--surface)] text-muted'
+}`}
+>
+{c}
+</button>
+))}
+</div>
+)}
+</div>
+<div className="flex items-center gap-1.5">
+<input
+type="number"
+step="0.01"
+value={draftVal}
+onChange={(e) => setDraftVal(e.target.value)}
+autoFocus
+className="flex-1 px-2.5 py-1.5 rounded-lg bg-[var(--surface)] outline-none font-display text-lg num"
+/>
                     <button
-                      onClick={() => confirmBudgetItem(item.id, { date: selected.toISOString() })}
-                      className="px-3 py-1.5 rounded-lg bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 text-xs font-medium shrink-0">
-                      Confirm
+type="button"
+onClick={() => saveEdit(w.id)}
+className="px-3 py-1.5 rounded-lg bg-accent-income text-white text-xs font-medium"
+>
+Save
                     </button>
-                  )}
+<button
+type="button"
+onClick={() => setEditingWalletId(null)}
+className="p-1.5 rounded-lg bg-[var(--surface)] text-muted"
+>
+<X size={13} />
+</button>
+</div>
                 </div>
-              );
-            })}
+)}
+</div>
+);
+})}
+</div>
+{/* ─── VERIFICATION & MISSING-MONEY REALLOCATION BANNER ──── */}
+<div
+className={`rounded-2xl p-4 border ${
+walletRecon.isBalanced
+? 'bg-accent-income/8 border-accent-income/30'
+: walletRecon.missingAmountBase > 0
+? 'bg-accent-expense/8 border-accent-expense/35'
+: 'bg-amber-500/8 border-amber-500/35'
+}`}
+>
+{walletRecon.isBalanced ? (
+<div className="flex items-center gap-2.5 text-xs">
+<CheckCircle2 size={16} className="text-accent-income shrink-0" />
+<div>
+<div className="font-semibold text-accent-income">
+Everything adds up!
+</div>
+<div className="text-[11px] text-muted">
+Your {walletRecon.wallets.length} accounts ({formatMoney(walletRecon.totalWalletsBase, baseCurrency)}) match your available total money left ({formatMoney(walletRecon.expectedTotalBase, baseCurrency)}).
+</div>
+</div>
           </div>
-        )}
+) : (
+<div className="space-y-3">
+<div className="flex items-start gap-2.5">
+<AlertTriangle
+size={16}
+className={walletRecon.missingAmountBase > 0 ? 'text-accent-expense shrink-0 mt-0.5' : 'text-amber-500 shrink-0 mt-0.5'}
+/>
+<div className="flex-1 min-w-0">
+<div className="text-xs font-semibold">
+{walletRecon.missingAmountBase > 0
+? `Missing ${formatMoney(diffHTG, 'HTG')} (${formatMoney(diffHTD, 'HTD')} · ${formatMoney(diffUSD, 'USD')}) to reallocate`
+: `Extra +${formatMoney(diffHTG, 'HTG')} (${formatMoney(diffHTD, 'HTD')} · ${formatMoney(diffUSD, 'USD')}) in accounts to allocate`}
+</div>
+<div className="text-[11px] text-muted mt-0.5">
+Accounts sum to <strong>{formatMoney(walletRecon.totalWalletsBase, baseCurrency)}</strong>, while your recorded available money is{' '}
+<strong>{formatMoney(walletRecon.expectedTotalBase, baseCurrency)}</strong>.
+</div>
+</div>
+</div>
 
-        <AnimatePresence mode="wait">
-          {selectedTxs.length === 0 ? (
-            <motion.div
-              key="empty"
-              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-              className="surface border rounded-2xl p-8 text-center"
-            >
-              <CalIcon size={28} className="mx-auto text-muted mb-3" strokeWidth={1.5} />
-              <div className="font-display text-xl mb-1">No activity</div>
-              <div className="text-sm text-muted">Nothing logged on this day</div>
-            </motion.div>
-          ) : (
-            <motion.ul
-              key={selected.toISOString()}
-              initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-              className="surface border rounded-2xl divide-y divide-[var(--border)] overflow-hidden"
-            >
-              {selectedTxs.map((t) => {
-                const isIncome = t.type === 'income';
-                return (
-                  <li
-                    key={t.id}
-                    {...bind(t)}
-                    className="flex items-center gap-3 px-4 py-3.5 select-none cursor-pointer active:bg-[var(--bg)] transition-colors"
-                  >
-                    <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
-                      isIncome ? 'bg-accent-income/10 text-accent-income' : 'bg-accent-expense/10 text-accent-expense'
-                    }`}>
-                      {isIncome ? <ArrowDownLeft size={16} /> : <ArrowUpRight size={16} />}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium truncate">{t.notes || t.category}</div>
-                      <div className="text-[11px] text-muted truncate">
-                        {t.category} · {new Date(t.date).toLocaleTimeString('en', { hour: 'numeric', minute: '2-digit' })}
-                      </div>
-                    </div>
-                    <div className={`font-medium num text-sm ${isIncome ? 'text-accent-income' : ''}`}>
-                      {isIncome ? '+' : '−'}{formatMoney(Math.abs(t.amount), t.currency || 'USD')}
-                    </div>
-                  </li>
-                );
-              })}
-            </motion.ul>
-          )}
-        </AnimatePresence>
-      </motion.section>
+<div className="flex items-center gap-2 flex-wrap pt-1">
+<select
+value={reconcileBucket}
+onChange={(e) => setReconcileBucket(e.target.value)}
+className="px-2.5 py-1.5 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-xs outline-none"
+>
+{walletRecon.extraAmountBase > 0 && (
+<option value="auto">Auto-split across 5 buckets</option>
+)}
+{buckets.map((b) => (
+<option key={b.key} value={b.key}>{b.name}</option>
+))}
+</select>
 
-      {sheet}
-    </>
-  );
-}
 
-// ════════════════════════════════════════════════════════════════════
-// COMPARE VIEW — period-over-period analytics
-// ════════════════════════════════════════════════════════════════════
-function startOfDay(d) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
-function endOfDay(d)   { const x = new Date(d); x.setHours(23,59,59,999); return x; }
-function daysAgo(n)    { const x = new Date(); x.setDate(x.getDate() - n); return x; }
-function fmtRange(from, to) {
-  const f = new Date(from), t = new Date(to);
-  const sameYear = f.getFullYear() === t.getFullYear();
-  const opts = sameYear
-    ? { month: 'short', day: 'numeric' }
-    : { month: 'short', day: 'numeric', year: '2-digit' };
-  return `${f.toLocaleDateString('en', opts)} – ${t.toLocaleDateString('en', opts)}`;
-}
-
-function buildPeriods(mode, customA, customB) {
-  if (mode === 'wow') {
-    const aFrom = startOfDay(daysAgo(6));
-    const aTo   = endOfDay(new Date());
-    const bFrom = startOfDay(daysAgo(13));
-    const bTo   = endOfDay(daysAgo(7));
-    return {
-      a: { from: aFrom.toISOString(), to: aTo.toISOString(), label: 'Last 7 days' },
-      b: { from: bFrom.toISOString(), to: bTo.toISOString(), label: 'Prior 7 days' },
-    };
-  }
-  if (mode === 'mom') {
-    const now = new Date();
-    const aFrom = new Date(now.getFullYear(), now.getMonth(), 1);
-    const aTo   = endOfDay(now);
-    const bFrom = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const bTo   = endOfDay(new Date(now.getFullYear(), now.getMonth(), 0));
-    return {
-      a: { from: aFrom.toISOString(), to: aTo.toISOString(), label: aFrom.toLocaleDateString('en', { month: 'long' }) },
-      b: { from: bFrom.toISOString(), to: bTo.toISOString(), label: bFrom.toLocaleDateString('en', { month: 'long' }) },
-    };
-  }
-  return {
-    a: customA && customA.from && customA.to
-      ? { from: new Date(customA.from + 'T00:00:00').toISOString(), to: new Date(customA.to + 'T23:59:59').toISOString(), label: 'Period A' }
-      : null,
-    b: customB && customB.from && customB.to
-      ? { from: new Date(customB.from + 'T00:00:00').toISOString(), to: new Date(customB.to + 'T23:59:59').toISOString(), label: 'Period B' }
-      : null,
-  };
-}
-
-function periodTotals(transactions, period, base, rates) {
-  if (!period) return { income: 0, expense: 0, net: 0 };
-  const from = new Date(period.from), to = new Date(period.to);
-  let income = 0, expense = 0;
-  for (const t of transactions) {
-    const d = new Date(t.date);
-    if (d < from || d > to) continue;
-    if (t.type === 'transfer') continue;
-    const v = convert(Math.abs(t.amount), t.currency || 'USD', base, rates);
-    if (t.type === 'income') income += v;
-    if (t.type === 'expense') expense += v;
-  }
-  return { income, expense, net: income - expense };
-}
-
-function periodByCategory(transactions, period, base, rates, kind) {
-  if (!period) return {};
-  const from = new Date(period.from), to = new Date(period.to);
-  const out = {};
-  for (const t of transactions) {
-    if (t.type !== kind) continue;
-    const d = new Date(t.date);
-    if (d < from || d > to) continue;
-    const v = convert(Math.abs(t.amount), t.currency || 'USD', base, rates);
-    const cat = t.category || 'Other';
-    out[cat] = (out[cat] || 0) + v;
-  }
-  return out;
-}
-
-function periodByBucket(transactions, period, base, rates) {
-  if (!period) return {};
-  const from = new Date(period.from), to = new Date(period.to);
-  const out = {};
-  for (const t of transactions) {
-    const d = new Date(t.date);
-    if (d < from || d > to) continue;
-    const allocations = t.buckets || {};
-    for (const [key, amt] of Object.entries(allocations)) {
-      const n = Number(amt) || 0;
-      if (n < 0) {
-        const v = convert(Math.abs(n), t.currency || 'USD', base, rates);
-        out[key] = (out[key] || 0) + v;
-      }
-    }
-  }
-  return out;
-}
-
-function buildSeries(transactions, periodA, periodB, base, rates) {
-  const lenDays = (p) => {
-    if (!p) return 0;
-    return Math.max(1, Math.round((new Date(p.to) - new Date(p.from)) / 86400000) + 1);
-  };
-  const lenA = lenDays(periodA);
-  const lenB = lenDays(periodB);
-  const maxLen = Math.max(lenA, lenB);
-
-  const dayKey = (date, periodFrom) => {
-    const diff = Math.floor((startOfDay(date) - startOfDay(new Date(periodFrom))) / 86400000);
-    return diff;
-  };
-
-  const series = Array.from({ length: maxLen }, (_, i) => ({
-    day: i + 1,
-    incomeA: 0, expenseA: 0, netA: 0,
-    incomeB: 0, expenseB: 0, netB: 0,
-  }));
-
-  if (periodA) {
-    const fromA = new Date(periodA.from), toA = new Date(periodA.to);
-    for (const t of transactions) {
-      const d = new Date(t.date);
-      if (d < fromA || d > toA) continue;
-      if (t.type === 'transfer') continue;
-      const idx = dayKey(d, periodA.from);
-      if (idx < 0 || idx >= maxLen) continue;
-      const v = convert(Math.abs(t.amount), t.currency || 'USD', base, rates);
-      if (t.type === 'income')  { series[idx].incomeA  += v; series[idx].netA += v; }
-      if (t.type === 'expense') { series[idx].expenseA += v; series[idx].netA -= v; }
-    }
-  }
-  if (periodB) {
-    const fromB = new Date(periodB.from), toB = new Date(periodB.to);
-    for (const t of transactions) {
-      const d = new Date(t.date);
-      if (d < fromB || d > toB) continue;
-      if (t.type === 'transfer') continue;
-      const idx = dayKey(d, periodB.from);
-      if (idx < 0 || idx >= maxLen) continue;
-      const v = convert(Math.abs(t.amount), t.currency || 'USD', base, rates);
-      if (t.type === 'income')  { series[idx].incomeB  += v; series[idx].netB += v; }
-      if (t.type === 'expense') { series[idx].expenseB += v; series[idx].netB -= v; }
-    }
-  }
-  return series;
-}
-
-function CompareView() {
-  const allTransactions = useStore(selectTransactions);
-  const filter = useWorkspaceFilter('personal');
-  const transactions = useMemo(
-    () => applyDateFilter(allTransactions, filter, 'date'),
-    [allTransactions, filter]
-  );
-  const buckets      = useStore(selectBuckets);
-  const baseCurrency = useStore(selectBaseCurrency);
-  const rates        = useStore(selectRates);
-
-  const [mode, setMode] = useState('mom');
-  const [customA, setCustomA] = useState({ from: '', to: '' });
-  const [customB, setCustomB] = useState({ from: '', to: '' });
-  const [chartMetric, setChartMetric] = useState('net');
-
-  const periods = useMemo(() => buildPeriods(mode, customA, customB), [mode, customA, customB]);
-  const periodA = periods.a, periodB = periods.b;
-
-  const totalsA = useMemo(() => periodTotals(transactions, periodA, baseCurrency, rates), [transactions, periodA, baseCurrency, rates]);
-  const totalsB = useMemo(() => periodTotals(transactions, periodB, baseCurrency, rates), [transactions, periodB, baseCurrency, rates]);
-
-  const expensesByCatA = useMemo(() => periodByCategory(transactions, periodA, baseCurrency, rates, 'expense'), [transactions, periodA, baseCurrency, rates]);
-  const expensesByCatB = useMemo(() => periodByCategory(transactions, periodB, baseCurrency, rates, 'expense'), [transactions, periodB, baseCurrency, rates]);
-
-  const bucketsA = useMemo(() => periodByBucket(transactions, periodA, baseCurrency, rates), [transactions, periodA, baseCurrency, rates]);
-  const bucketsB = useMemo(() => periodByBucket(transactions, periodB, baseCurrency, rates), [transactions, periodB, baseCurrency, rates]);
-
-  const series = useMemo(() => buildSeries(transactions, periodA, periodB, baseCurrency, rates), [transactions, periodA, periodB, baseCurrency, rates]);
-
-  const movers = useMemo(() => {
-    const allCats = new Set([...Object.keys(expensesByCatA), ...Object.keys(expensesByCatB)]);
-    const rows = [];
-    for (const cat of allCats) {
-      const a = expensesByCatA[cat] || 0;
-      const b = expensesByCatB[cat] || 0;
-      const delta = a - b;
-      rows.push({ cat, a, b, delta, deltaPct: b > 0 ? (delta / b) * 100 : (a > 0 ? 100 : 0) });
-    }
-    rows.sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta));
-    return rows.slice(0, 8);
-  }, [expensesByCatA, expensesByCatB]);
-
-  const bucketComparison = useMemo(() => {
-    const sorted = [...buckets].filter((b) => b.enabled !== false).sort((a, b) => a.order - b.order);
-    return sorted.map((b) => ({
-      key: b.key, name: b.name, color: b.color,
-      a: bucketsA[b.key] || 0,
-      b: bucketsB[b.key] || 0,
-    })).filter(r => r.a > 0 || r.b > 0);
-  }, [buckets, bucketsA, bucketsB]);
-
-  const savingsRateA = totalsA.income > 0 ? (totalsA.income - totalsA.expense) / totalsA.income : 0;
-  const savingsRateB = totalsB.income > 0 ? (totalsB.income - totalsB.expense) / totalsB.income : 0;
-
-  const periodsValid = periodA && periodB;
-
-  return (
-    <>
-      {/* Mode picker */}
-      <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.05 }} className="mb-4">
-        <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-[var(--surface)]">
-          {[
-            { id: 'wow', label: 'Week / Week' },
-            { id: 'mom', label: 'Month / Month' },
-            { id: 'custom', label: 'Custom' },
-          ].map((m) => {
-            const active = mode === m.id;
-            return (
               <button
-                key={m.id}
-                onClick={() => setMode(m.id)}
-                className={`py-2 rounded-lg text-xs font-medium transition-all ${
-                  active ? 'bg-[var(--bg)] shadow-sm' : 'text-muted'
-                }`}
+type="button"
+onClick={() =>
+onReconcile({
+diffBase: walletRecon.differenceBase,
+actionType: walletRecon.missingAmountBase > 0 ? 'expense' : 'income',
+bucketKey: walletRecon.extraAmountBase > 0 && reconcileBucket === 'auto' ? 'auto' : reconcileBucket,
+date: `${dateStr}T12:00:00.000Z`,
+})
+}
+className="px-3 py-1.5 rounded-lg bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 text-xs font-medium"
               >
-                {m.label}
+{walletRecon.missingAmountBase > 0
+? 'Deduct missing from bucket so everything adds up'
+: 'Allocate extra money into buckets'}
               </button>
-            );
-          })}
-        </div>
 
-        {mode === 'custom' && (
-          <div className="grid grid-cols-2 gap-3 mt-3">
-            <div className="surface border rounded-xl p-3 space-y-2">
-              <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">Period A</div>
-              <input type="date" value={customA.from} onChange={(e) => setCustomA({ ...customA, from: e.target.value })}
-                max={customA.to || undefined}
-                className="w-full px-2 py-1.5 rounded-lg bg-[var(--bg)] outline-none text-xs num" />
-              <input type="date" value={customA.to} onChange={(e) => setCustomA({ ...customA, to: e.target.value })}
-                min={customA.from || undefined}
-                className="w-full px-2 py-1.5 rounded-lg bg-[var(--bg)] outline-none text-xs num" />
-            </div>
-            <div className="surface border rounded-xl p-3 space-y-2">
-              <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">Period B</div>
-              <input type="date" value={customB.from} onChange={(e) => setCustomB({ ...customB, from: e.target.value })}
-                max={customB.to || undefined}
-                className="w-full px-2 py-1.5 rounded-lg bg-[var(--bg)] outline-none text-xs num" />
-              <input type="date" value={customB.to} onChange={(e) => setCustomB({ ...customB, to: e.target.value })}
-                min={customB.from || undefined}
-                className="w-full px-2 py-1.5 rounded-lg bg-[var(--bg)] outline-none text-xs num" />
             </div>
           </div>
         )}
-      </motion.section>
 
-      {!periodsValid ? (
-        <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.1 }}>
-          <div className="surface border rounded-2xl p-8 text-center">
-            <div className="font-display text-lg mb-1">Pick two periods</div>
-            <div className="text-sm text-muted">Choose a date range for each period to compare.</div>
-          </div>
-        </motion.section>
-      ) : (
-        <>
-          {/* Period labels */}
-          <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.08 }}
-            className="grid grid-cols-2 gap-3 mb-3 text-center">
-            <div>
-              <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">{periodA.label}</div>
-              <div className="text-[10px] text-muted num mt-0.5">{fmtRange(periodA.from, periodA.to)}</div>
-            </div>
-            <div>
-              <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">{periodB.label}</div>
-              <div className="text-[10px] text-muted num mt-0.5">{fmtRange(periodB.from, periodB.to)}</div>
-            </div>
-          </motion.section>
-
-          {/* Headline trio */}
-          <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.1 }} className="space-y-3 mb-5">
-            <CompareCard label="Income" tone="income" icon={ArrowDownLeft}
-              valueA={totalsA.income} valueB={totalsB.income} currency={baseCurrency} />
-            <CompareCard label="Expenses" tone="expense" icon={ArrowUpRight}
-              valueA={totalsA.expense} valueB={totalsB.expense} currency={baseCurrency} invertDelta />
-            <CompareCard label="Net"
-              tone={totalsA.net >= 0 ? 'income' : 'expense'}
-              icon={totalsA.net >= totalsB.net ? TrendingUp : TrendingDown}
-              valueA={totalsA.net} valueB={totalsB.net} currency={baseCurrency} />
-          </motion.section>
-
-          {/* Cash flow chart */}
-          <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.13 }} className="mb-5">
-            <div className="surface border rounded-2xl p-5">
-              <div className="flex items-baseline justify-between mb-3">
-                <div>
-                  <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">Daily flow</div>
-                  <div className="font-display text-2xl mt-0.5">A vs B</div>
-                </div>
-                <div className="grid grid-cols-3 gap-1 p-0.5 rounded-lg bg-[var(--bg)]">
-                  {[
-                    { id: 'income',  label: 'In' },
-                    { id: 'expense', label: 'Out' },
-                    { id: 'net',     label: 'Net' },
-                  ].map((m) => (
-                    <button
-                      key={m.id}
-                      onClick={() => setChartMetric(m.id)}
-                      className={`px-2.5 py-1 rounded-md text-[10px] font-medium ${
-                        chartMetric === m.id ? 'bg-[var(--surface)] shadow-sm' : 'text-muted'
-                      }`}
-                    >
-                      {m.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="flex items-center gap-3 text-[11px] mb-3">
-                <span className="flex items-center gap-1.5">
-                  <span className="w-3 h-0.5 bg-ink-900 dark:bg-ink-50" />
-                  <span className="text-muted">{periodA.label}</span>
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="w-3 h-0.5 border-t-2 border-dashed" style={{ borderColor: 'var(--text-muted)' }} />
-                  <span className="text-muted">{periodB.label}</span>
-                </span>
-              </div>
-              <div className="h-56 -mx-2">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={series} margin={{ top: 4, right: 8, bottom: 0, left: -16 }}>
-                    <CartesianGrid stroke="var(--border)" vertical={false} strokeDasharray="3 3" />
-                    <XAxis dataKey="day" tickFormatter={(d) => `D${d}`}
-                      tick={{ fontSize: 10, fill: 'var(--text-muted)' }}
-                      axisLine={false} tickLine={false} interval="preserveStartEnd" minTickGap={20} />
-                    <YAxis tick={{ fontSize: 10, fill: 'var(--text-muted)' }}
-                      axisLine={false} tickLine={false}
-                      tickFormatter={(v) => formatCompact(v, baseCurrency)} width={48} />
-                    <Tooltip content={<CompareTooltip currency={baseCurrency} metric={chartMetric} periodA={periodA} periodB={periodB} />} cursor={{ stroke: 'var(--border)' }} />
-                    <Line type="monotone" dataKey={`${chartMetric}A`} stroke="var(--text)"
-                      strokeWidth={2} dot={false} isAnimationActive animationDuration={500} />
-                    <Line type="monotone" dataKey={`${chartMetric}B`} stroke="var(--text-muted)"
-                      strokeWidth={1.75} strokeDasharray="4 3" dot={false} isAnimationActive animationDuration={500} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          </motion.section>
-
-          {/* Savings rate */}
-          <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.15 }} className="mb-5">
-            <div className="surface border rounded-2xl p-5">
-              <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold mb-3">Savings rate</div>
-              <div className="grid grid-cols-2 gap-4">
-                <SavingsRateCell label={periodA.label} rate={savingsRateA} hasIncome={totalsA.income > 0} />
-                <SavingsRateCell label={periodB.label} rate={savingsRateB} hasIncome={totalsB.income > 0} />
-              </div>
-              {totalsA.income > 0 && totalsB.income > 0 && (
-                <div className="text-[11px] text-muted text-center mt-3">
-                  {savingsRateA > savingsRateB
-                    ? `Up ${((savingsRateA - savingsRateB) * 100).toFixed(1)} pts`
-                    : savingsRateA < savingsRateB
-                      ? `Down ${((savingsRateB - savingsRateA) * 100).toFixed(1)} pts`
-                      : 'Unchanged'}
-                </div>
-              )}
-            </div>
-          </motion.section>
-
-          {/* Top movers */}
-          <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.17 }} className="mb-5">
-            <div className="surface border rounded-2xl p-5">
-              <div className="flex items-baseline justify-between mb-3">
-                <div>
-                  <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">Top movers</div>
-                  <div className="font-display text-2xl mt-0.5">Where it shifted</div>
-                </div>
-                <span className="text-[11px] text-muted">By expense delta</span>
-              </div>
-              {movers.length === 0 ? (
-                <div className="py-6 text-center text-sm text-muted">No expense activity in either period.</div>
-              ) : (
-                <ul className="space-y-2">
-                  {movers.map((m) => (
-                    <MoverRow key={m.cat} mover={m} currency={baseCurrency} />
-                  ))}
-                </ul>
-              )}
-            </div>
-          </motion.section>
-
-          {/* Bucket comparison */}
-          {bucketComparison.length > 0 && (
-            <motion.section {...fadeUp} transition={{ duration: 0.5, ease, delay: 0.19 }} className="mb-5">
-              <div className="surface border rounded-2xl p-5">
-                <div className="flex items-baseline justify-between mb-3">
-                  <div>
-                    <div className="text-[10px] uppercase tracking-[0.14em] text-muted font-semibold">Buckets</div>
-                    <div className="font-display text-2xl mt-0.5">Outflow per bucket</div>
-                  </div>
-                </div>
-                <ul className="space-y-3">
-                  {bucketComparison.map((b) => {
-                    const max = Math.max(b.a, b.b, 1);
-                    return (
-                      <li key={b.key}>
-                        <div className="flex items-center gap-2 mb-1.5">
-                          <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: b.color }} />
-                          <span className="text-[12px] font-medium flex-1 truncate">{b.name}</span>
-                          <DeltaPill a={b.a} b={b.b} invert />
-                        </div>
-                        <div className="space-y-1">
-                          <BucketBar label={periodA.label} value={b.a} max={max} color={b.color} currency={baseCurrency} solid />
-                          <BucketBar label={periodB.label} value={b.b} max={max} color={b.color} currency={baseCurrency} />
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            </motion.section>
-          )}
-        </>
-      )}
-    </>
-  );
-}
-
-function CompareCard({ label, tone, icon: Icon, valueA, valueB, currency, invertDelta = false }) {
-  const delta = valueA - valueB;
-  const deltaPct = valueB !== 0 ? (delta / Math.abs(valueB)) * 100 : (valueA !== 0 ? 100 : 0);
-  const goodSign = invertDelta ? -delta : delta;
-  const deltaTone = goodSign > 0 ? 'income' : goodSign < 0 ? 'expense' : 'muted';
-  const toneClass =
-    tone === 'income'  ? 'text-accent-income'  :
-    tone === 'expense' ? 'text-accent-expense' : '';
-  const deltaClass =
-    deltaTone === 'income'  ? 'text-accent-income'  :
-    deltaTone === 'expense' ? 'text-accent-expense' : 'text-muted';
-
-  return (
-    <div className="surface border rounded-2xl p-4">
-      <div className="flex items-center gap-2 mb-3">
-        <div className={`w-7 h-7 rounded-lg bg-[var(--bg)] flex items-center justify-center ${toneClass}`}>
-          <Icon size={14} strokeWidth={2.25} />
-        </div>
-        <span className="text-[10px] text-muted uppercase tracking-[0.1em] font-semibold">{label}</span>
-        <div className={`ml-auto text-[11px] num font-medium ${deltaClass}`}>
-          {delta === 0 ? (
-            <span className="flex items-center gap-1"><Minus size={11} /> 0%</span>
-          ) : (
-            <span>{delta > 0 ? '+' : ''}{deltaPct.toFixed(0)}%</span>
-          )}
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <div className={`font-display text-2xl num ${toneClass}`}>{formatCompact(valueA, currency)}</div>
-          <div className="text-[10px] text-muted mt-0.5">A</div>
-        </div>
-        <div>
-          <div className="font-display text-2xl num text-muted">{formatCompact(valueB, currency)}</div>
-          <div className="text-[10px] text-muted mt-0.5">B</div>
-        </div>
       </div>
     </div>
   );
 }
 
-function CompareTooltip({ active, payload, label, currency, metric, periodA, periodB }) {
-  if (!active || !payload?.length) return null;
-  const a = payload.find((p) => p.dataKey === `${metric}A`)?.value || 0;
-  const b = payload.find((p) => p.dataKey === `${metric}B`)?.value || 0;
+function InlineDayTxForm({ type, dateStr, wallets, buckets, defaultCurrency, onSave, onCancel }) {
+const [notes, setNotes] = useState('');
+const [amount, setAmount] = useState('');
+const [currency, setCurrency] = useState(defaultCurrency || 'HTG');
+const [walletId, setWalletId] = useState(wallets[0]?.id || 'w_moncash');
+const [bucketKey, setBucketKey] = useState(type === 'income' ? 'auto' : 'operations');
+const submit = (e) => {
+e.preventDefault();
+const v = parseFloat(amount);
+if (!v || v <= 0) return;
+const payload = {
+type,
+amount: v,
+currency,
+walletId,
+category: type === 'income' ? 'Salary' : 'Other',
+notes: notes.trim() || (type === 'income' ? 'Income' : 'Spending'),
+date: `${dateStr}T12:00:00.000Z`,
+};
+if (type === 'income' && bucketKey !== 'auto') {
+payload.buckets = { [bucketKey]: v };
+} else if (type === 'expense') {
+payload.sourceBucketKey = bucketKey;
+payload.buckets = { [bucketKey]: -v };
+}
+onSave(payload);
+};
   return (
-    <div className="surface border rounded-xl px-3 py-2.5 shadow-lg text-xs num">
-      <div className="font-medium mb-1.5">Day {label}</div>
-      <div className="flex items-center justify-between gap-6">
-        <span className="text-muted">{periodA.label}</span>
-        <span className="font-medium">{formatMoney(a, currency)}</span>
+<form onSubmit={submit} className="bg-[var(--bg)] rounded-xl p-3 mb-2 space-y-2 text-xs border border-[var(--border)]">
+<div className="grid grid-cols-[1fr_auto] gap-2">
+<input
+type="text"
+value={notes}
+onChange={(e) => setNotes(e.target.value)}
+placeholder={type === 'income' ? 'Income source (e.g., Recharge+, Salary)' : 'What did you spend on?'}
+autoFocus
+className="px-2.5 py-1.5 rounded-lg bg-[var(--surface)] outline-none"
+/>
+<select
+value={currency}
+onChange={(e) => setCurrency(e.target.value)}
+className="px-2 py-1.5 rounded-lg bg-[var(--surface)] outline-none font-medium"
+>
+{Object.keys(CURRENCIES).map((c) => <option key={c} value={c}>{c}</option>)}
+</select>
       </div>
-      <div className="flex items-center justify-between gap-6">
-        <span className="text-muted">{periodB.label}</span>
-        <span className="font-medium">{formatMoney(b, currency)}</span>
+<div className="grid grid-cols-3 gap-2">
+<input
+type="number"
+step="0.01"
+min="0"
+value={amount}
+onChange={(e) => setAmount(e.target.value)}
+placeholder="Amount"
+className="px-2.5 py-1.5 rounded-lg bg-[var(--surface)] outline-none num font-medium"
+/>
+<select
+value={walletId}
+onChange={(e) => setWalletId(e.target.value)}
+className="px-2 py-1.5 rounded-lg bg-[var(--surface)] outline-none"
+>
+{wallets.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+</select>
+<select
+value={bucketKey}
+onChange={(e) => setBucketKey(e.target.value)}
+className="px-2 py-1.5 rounded-lg bg-[var(--surface)] outline-none"
+>
+{type === 'income' && <option value="auto">Auto-Split (5 Buckets)</option>}
+{buckets.map((b) => (
+<option key={b.key} value={b.key}>{b.name}</option>
+))}
+</select>
+</div>
+<div className="flex justify-end gap-2 pt-1">
+<button type="button" onClick={onCancel} className="px-2.5 py-1 rounded-lg bg-[var(--surface)] text-muted">
+Cancel
+</button>
+<button
+type="submit"
+disabled={!amount || parseFloat(amount) <= 0}
+className="px-3 py-1 rounded-lg bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 font-medium disabled:opacity-40"
+>
+Save {type === 'income' ? 'Income' : 'Spending'}
+</button>
+</div>
+</form>
+);
+}
+function InlineConversionForm({ dateStr, wallets, onSave, onCancel }) {
+const [fromWalletId, setFromWalletId] = useState('w_wise');
+const [fromAmount, setFromAmount] = useState('');
+const [fromCurrency, setFromCurrency] = useState('USD');
+const [toWalletId, setToWalletId] = useState('w_moncash');
+const [toAmount, setToAmount] = useState('');
+const [toCurrency, setToCurrency] = useState('HTG');
+const [feeAmount, setFeeAmount] = useState('');
+const [feeCurrency, setFeeCurrency] = useState('HTG');
+const [notes, setNotes] = useState('');
+const submit = (e) => {
+e.preventDefault();
+if (!fromAmount || !toAmount) return;
+onSave({
+date: `${dateStr}T12:00:00.000Z`,
+fromWalletId,
+fromAmount: parseFloat(fromAmount) || 0,
+fromCurrency,
+toWalletId,
+toAmount: parseFloat(toAmount) || 0,
+toCurrency,
+feeAmount: parseFloat(feeAmount) || 0,
+feeCurrency,
+notes: notes.trim(),
+});
+};
+return (
+<form onSubmit={submit} className="bg-[var(--bg)] rounded-xl p-3 space-y-2 text-xs border border-[var(--border)]">
+<div className="font-semibold text-[11px]">Log Conversion & Any Fee Taken</div>
+<div className="grid grid-cols-3 gap-1.5">
+<select value={fromWalletId} onChange={(e) => setFromWalletId(e.target.value)} className="px-2 py-1.5 rounded bg-[var(--surface)]">
+{wallets.map((w) => <option key={w.id} value={w.id}>From: {w.name}</option>)}
+</select>
+<input type="number" step="0.01" value={fromAmount} onChange={(e) => setFromAmount(e.target.value)} placeholder="From amt" className="px-2 py-1.5 rounded bg-[var(--surface)] num" />
+<select value={fromCurrency} onChange={(e) => setFromCurrency(e.target.value)} className="px-2 py-1.5 rounded bg-[var(--surface)]">
+{Object.keys(CURRENCIES).map((c) => <option key={c} value={c}>{c}</option>)}
+</select>
+</div>
+<div className="grid grid-cols-3 gap-1.5">
+<select value={toWalletId} onChange={(e) => setToWalletId(e.target.value)} className="px-2 py-1.5 rounded bg-[var(--surface)]">
+{wallets.map((w) => <option key={w.id} value={w.id}>To: {w.name}</option>)}
+</select>
+<input type="number" step="0.01" value={toAmount} onChange={(e) => setToAmount(e.target.value)} placeholder="Received amt" className="px-2 py-1.5 rounded bg-[var(--surface)] num" />
+<select value={toCurrency} onChange={(e) => setToCurrency(e.target.value)} className="px-2 py-1.5 rounded bg-[var(--surface)]">
+{Object.keys(CURRENCIES).map((c) => <option key={c} value={c}>{c}</option>)}
+</select>
+</div>
+<div className="grid grid-cols-[1fr_auto_1fr] gap-1.5 items-center">
+<input
+type="number"
+step="0.01"
+value={feeAmount}
+onChange={(e) => setFeeAmount(e.target.value)}
+placeholder="Fee taken (e.g. 105)"
+className="px-2 py-1.5 rounded bg-[var(--surface)] num"
+/>
+<select value={feeCurrency} onChange={(e) => setFeeCurrency(e.target.value)} className="px-2 py-1.5 rounded bg-[var(--surface)]">
+{Object.keys(CURRENCIES).map((c) => <option key={c} value={c}>{c}</option>)}
+</select>
+<input
+type="text"
+value={notes}
+onChange={(e) => setNotes(e.target.value)}
+placeholder="Note (e.g. Frais MonCash)"
+className="px-2 py-1.5 rounded bg-[var(--surface)]"
+/>
+</div>
+<div className="flex justify-end gap-2 pt-1">
+<button type="button" onClick={onCancel} className="px-2.5 py-1 rounded bg-[var(--surface)] text-muted">Cancel</button>
+<button type="submit" disabled={!fromAmount || !toAmount} className="px-3 py-1 rounded bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 font-medium disabled:opacity-40">
+Save Conversion
+</button>
+</div>
+</form>
+);
+}
+function MiniMonthGrid({ selectedDate, transactions, onSelectDate }) {
+const [cursorMonth, setCursorMonth] = useState(() => {
+const d = new Date(`${selectedDate}T12:00:00`);
+return new Date(d.getFullYear(), d.getMonth(), 1);
+});
+const activeDates = useMemo(() => {
+const set = new Set();
+for (const t of (transactions || [])) {
+if (!t || !t.date || t.type === 'meta') continue;
+set.add(toDateKey(t.date));
+}
+return set;
+}, [transactions]);
+const year = cursorMonth.getFullYear();
+const month = cursorMonth.getMonth();
+const firstDay = new Date(year, month, 1).getDay();
+const daysInMonth = new Date(year, month + 1, 0).getDate();
+const cells = [];
+for (let i = 0; i < firstDay; i++) cells.push(null);
+for (let day = 1; day <= daysInMonth; day++) {
+const k = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+cells.push({ day, key: k, hasTx: activeDates.has(k) });
+}
+return (
+<div className="surface border rounded-2xl p-3.5 text-xs">
+<div className="flex items-center justify-between mb-2">
+<button
+type="button"
+onClick={() => setCursorMonth(new Date(year, month - 1, 1))}
+className="p-1 rounded hover:bg-[var(--bg)]"
+>
+<ChevronLeft size={14} />
+</button>
+<span className="font-semibold">
+{cursorMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+</span>
+<button
+type="button"
+onClick={() => setCursorMonth(new Date(year, month + 1, 1))}
+className="p-1 rounded hover:bg-[var(--bg)]"
+>
+<ChevronRight size={14} />
+</button>
+</div>
+<div className="grid grid-cols-7 gap-1 text-center text-[10px] text-muted mb-1">
+{['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((d) => <div key={d}>{d}</div>)}
+</div>
+<div className="grid grid-cols-7 gap-1">
+{cells.map((c, idx) =>
+!c ? (
+<div key={`empty_${idx}`} />
+) : (
+<button
+key={c.key}
+type="button"
+onClick={() => onSelectDate(c.key)}
+className={`py-1.5 rounded-lg num text-xs relative flex flex-col items-center justify-center ${
+c.key === selectedDate
+? 'bg-ink-900 dark:bg-ink-50 text-ink-50 dark:text-ink-900 font-semibold'
+: 'hover:bg-[var(--bg)]'
+}`}
+>
+<span>{c.day}</span>
+{c.hasTx && (
+<span className={`w-1 h-1 rounded-full mt-0.5 ${c.key === selectedDate ? 'bg-current' : 'bg-accent-income'}`} />
+)}
+</button>
+)
+)}
       </div>
     </div>
   );
 }
 
-function SavingsRateCell({ label, rate, hasIncome }) {
-  const pct = rate * 100;
-  const tone = pct >= 20 ? 'income' : pct < 0 ? 'expense' : '';
-  return (
-    <div className="text-center">
-      <div className="text-[10px] uppercase tracking-[0.1em] text-muted font-semibold mb-1">{label}</div>
-      {hasIncome ? (
-        <div className={`font-display text-3xl num ${tone === 'income' ? 'text-accent-income' : tone === 'expense' ? 'text-accent-expense' : ''}`}>
-          {pct.toFixed(0)}%
-        </div>
-      ) : (
-        <div className="font-display text-3xl text-muted">—</div>
-      )}
-    </div>
-  );
-}
-
-function MoverRow({ mover, currency }) {
-  const { cat, a, b, delta, deltaPct } = mover;
-  const goodSign = -delta;
-  const deltaClass =
-    delta === 0 ? 'text-muted' :
-    goodSign > 0 ? 'text-accent-income' : 'text-accent-expense';
-  return (
-    <li className="flex items-center gap-3 py-1.5">
-      <div className="flex-1 min-w-0">
-        <div className="text-[13px] font-medium truncate">{cat}</div>
-        <div className="text-[11px] text-muted num">
-          {formatCompact(a, currency)} <span className="opacity-50">vs</span> {formatCompact(b, currency)}
-        </div>
-      </div>
-      <div className={`text-right shrink-0 num ${deltaClass}`}>
-        <div className="text-[13px] font-medium">
-          {delta > 0 ? '+' : delta < 0 ? '−' : ''}{formatCompact(Math.abs(delta), currency)}
-        </div>
-        <div className="text-[10px]">
-          {delta === 0 ? '—' : `${delta > 0 ? '+' : ''}${deltaPct.toFixed(0)}%`}
-        </div>
-      </div>
-    </li>
-  );
-}
-
-function DeltaPill({ a, b, invert = false }) {
-  const delta = a - b;
-  if (delta === 0) return <span className="text-[10px] text-muted num">—</span>;
-  const goodSign = invert ? -delta : delta;
-  const cls = goodSign > 0 ? 'text-accent-income' : 'text-accent-expense';
-  const pct = b !== 0 ? (delta / Math.abs(b)) * 100 : 100;
-  return (
-    <span className={`text-[10px] num font-medium ${cls}`}>
-      {delta > 0 ? '+' : ''}{pct.toFixed(0)}%
-    </span>
-  );
-}
-
-function BucketBar({ label, value, max, color, currency, solid = false }) {
-  const pct = max > 0 ? (value / max) * 100 : 0;
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-[10px] text-muted w-16 shrink-0 truncate">{label}</span>
-      <div className="flex-1 h-1.5 rounded-full bg-[var(--bg)] overflow-hidden">
-        <motion.div
-          initial={{ width: 0 }}
-          animate={{ width: `${pct}%` }}
-          transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-          className="h-full rounded-full"
-          style={{ backgroundColor: color, opacity: solid ? 1 : 0.45 }}
-        />
-      </div>
-      <span className="text-[10px] num text-muted w-14 text-right shrink-0">{formatCompact(value, currency)}</span>
-    </div>
-  );
-}

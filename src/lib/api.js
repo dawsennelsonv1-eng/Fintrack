@@ -1,18 +1,14 @@
 // src/lib/api.js
-// Tier 5b — workspace-aware API routing
+
 //
 // Each workspace has its own Apps Script deployment URL:
-//   • Personal → VITE_API_URL          (the existing Personal sheet/v7 server)
-//   • AVS      → VITE_API_URL_AVS      (the new AVS sheet/v8 server)
-//
-// Backward-compat: if no workspace is passed, we default to the Personal
-// URL exactly like before. All existing Personal code keeps working
-// without changes.
-//
-// Form-encoded POST + 302-survival contract is identical to v7.
 
-const PERSONAL_URL = import.meta.env.VITE_API_URL || '';
-const AVS_URL      = import.meta.env.VITE_API_URL_AVS || '';
+//
+
+
+const PERSONAL_URL = import.meta.env?.VITE_API_URL || '';
+const AVS_URL      = import.meta.env?.VITE_API_URL_AVS || '';
+export const SYSTEM_STATE_ROW_ID = '__fintrack_state_v8__';
 
 class ApiError extends Error {
   constructor(message, status = 0) {
@@ -26,27 +22,18 @@ function urlFor(workspace) {
   return PERSONAL_URL;
 }
 
-async function request(method, body, workspace) {
-  const url = urlFor(workspace);
-  if (!url) {
-    throw new ApiError(
-      workspace === 'avs'
-        ? 'VITE_API_URL_AVS not configured'
-        : 'VITE_API_URL not configured'
-    );
-  }
-
+async function sendPost(url, body, encoding = 'json') {
   const opts = {
-    method,
+method: 'POST',
     redirect: 'follow',
     cache: 'no-store',
   };
 
-  if (method === 'POST' && body) {
-    // Form-encode so the payload survives Apps Script's 302 redirect.
-    // Apps Script reads this server-side as e.parameter.payload.
+if (encoding === 'form') {
     opts.body = new URLSearchParams({ payload: JSON.stringify(body) });
-    // Do NOT set Content-Type — URLSearchParams sets it correctly.
+} else {
+opts.headers = { 'Content-Type': 'text/plain;charset=utf-8' };
+opts.body = JSON.stringify(body);
   }
 
   let res;
@@ -66,17 +53,57 @@ async function request(method, body, workspace) {
     throw new ApiError('Response parse failed (request may have processed)', 502);
   }
 
+return data;
+}
+async function request(method, body, workspace) {
+const url = urlFor(workspace);
+if (!url) {
+throw new ApiError(
+workspace === 'avs'
+? 'VITE_API_URL_AVS not configured'
+: 'VITE_API_URL not configured'
+);
+}
+if (method !== 'POST' || !body) {
+let res;
+try {
+res = await fetch(url, { method: 'GET', redirect: 'follow', cache: 'no-store' });
+} catch (err) {
+throw new ApiError('Network unreachable', 0);
+}
+if (!res.ok) throw new ApiError(`HTTP ${res.status}`, res.status);
+let data;
+try {
+const text = await res.text();
+data = JSON.parse(text);
+} catch (e) {
+throw new ApiError('Response parse failed', 502);
+}
+if (data.status >= 400) {
+throw new ApiError(data.error || 'API error', data.status);
+}
+return data;
+}
+const primaryEncoding = workspace === 'avs' ? 'form' : 'json';
+const fallbackEncoding = primaryEncoding === 'json' ? 'form' : 'json';
+let data = await sendPost(url, body, primaryEncoding);
+if (
+data &&
+data.status >= 400 &&
+typeof data.error === 'string' &&
+(data.error.includes('Unexpected token') ||
+data.error.includes('payload') ||
+data.error.includes('JSON'))
+) {
+data = await sendPost(url, body, fallbackEncoding);
+}
   if (data.status >= 400) {
     throw new ApiError(data.error || 'API error', data.status);
   }
   return data;
 }
 
-// ─── Backward-compatible exports for Personal ──────────────────
-//
-// These signatures match v7 exactly so no existing Personal code
-// needs touching. They implicitly use the Personal URL.
-//
+
 export const api = {
   fetchAll: ()    => request('GET',  null,                              'personal'),
   create:   (tx)  => request('POST', { action: 'create', ...tx },       'personal'),
@@ -85,11 +112,7 @@ export const api = {
   bulk:     (ops) => request('POST', { action: 'bulk', operations: ops }, 'personal'),
 };
 
-// ─── Workspace-aware exports for new code ──────────────────────
-//
-// Pass workspace explicitly. Used by the AVS business slice and any
-// future workspaces. Personal slice keeps using `api` above unchanged.
-//
+
 export const apiFor = (workspace) => ({
   fetchAll: ()    => request('GET',  null,                              workspace),
   create:   (tx)  => request('POST', { action: 'create', ...tx },       workspace),
@@ -99,7 +122,7 @@ export const apiFor = (workspace) => ({
   ping:     ()    => request('POST', { action: 'ping' },                 workspace),
 });
 
-// Convenience instances
+
 export const personalApi = apiFor('personal');
 export const avsApi      = apiFor('avs');
 
