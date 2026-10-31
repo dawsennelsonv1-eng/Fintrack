@@ -134,3 +134,17 @@ it('Net Worth always equals Total Assets minus Total Liabilities', () => {
   });
 });
 
+
+describe("Zustand v5 + React 18 useSyncExternalStore selector reference stability", () => {
+  it("returns identical object/array references on consecutive calls to every exported selector", async () => {
+    const storeMod = await import("../useStore");
+    const state = storeMod.useStore.getState();
+    for (const [name, fn] of Object.entries(storeMod)) {
+      if (name.startsWith("select") && typeof fn === "function") {
+        const r1 = fn(state);
+        const r2 = fn(state);
+        expect(Object.is(r1, r2), `Selector ${name} must return a stable reference`).toBe(true);
+      }
+    }
+  });
+});

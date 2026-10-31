@@ -51,6 +51,25 @@ export const DEFAULT_WALLETS = [
 { id: 'w_mom',     name: "Mom's Account",  currency: 'HTG', allowAnyCurrency: false, color: '#e07a5f', icon: 'Heart',      order: 7, balance: 0 },
 ];
 
+export const EMPTY_ARRAY = Object.freeze([]);
+export const EMPTY_OBJECT = Object.freeze({});
+export const DEFAULT_TODAY_STR = new Date().toISOString().slice(0, 10);
+
+export function ensureDefaultWallets(wallets) {
+  if (!Array.isArray(wallets) || wallets.length === 0) return DEFAULT_WALLETS;
+  const byId = new Map(wallets.filter(Boolean).map((w) => [w.id, w]));
+  const merged = DEFAULT_WALLETS.map((def) => ({
+    ...def,
+    ...(byId.get(def.id) || {}),
+  }));
+  for (const w of wallets) {
+    if (w && w.id && !DEFAULT_WALLETS.some((d) => d.id === w.id)) {
+      merged.push(w);
+    }
+  }
+  return merged;
+}
+
 export const DANGER_MODE_BUCKETS = [
 { key: 'debtRepayment', name: 'Debt Repayment',         percentage: 40, dangerPercentage: 40, normalPercentage: 0,  color: '#c2452f', icon: 'Flame',      order: 1, enabled: true },
 { key: 'warChest',      name: 'Investment (War Chest)', percentage: 25, dangerPercentage: 25, normalPercentage: 50, color: '#d4a942', icon: 'TrendingUp', order: 2, enabled: true },
@@ -2400,7 +2419,7 @@ borrowedDeployments:  mergeCollection(st.personal.borrowedDeployments, data.borr
 ventureDistributions: mergeCollection(st.personal.ventureDistributions, data.ventureDistributions, cloudState?.ventureDistributions),
 ventureMilestones:    mergeCollection(st.personal.ventureMilestones, data.ventureMilestones, cloudState?.ventureMilestones),
 ventureJournal:       mergeCollection(st.personal.ventureJournal, data.ventureJournal, cloudState?.ventureJournal),
-wallets:              mergedWallets.length > 0 ? mergedWallets : DEFAULT_WALLETS,
+wallets:              ensureDefaultWallets(mergedWallets),
 conversions:          mergedConversions,
 bucketNotes:          { ...(cloudState?.bucketNotes || {}), ...(st.personal.bucketNotes || {}) },
           lastSyncAt: nowISO(),
@@ -2513,7 +2532,7 @@ app: { ...s.app, online: !(err instanceof ApiError && err.status === 0) },
 // ════════════════════════════════════════════════════════════════════
 // COMPOSED STORE
 // ════════════════════════════════════════════════════════════════════
-export const useStore = create()(
+const rawUseStore = create()(
   persist(
     (set, get) => ({
       ...appSlice(set, get),
@@ -2592,7 +2611,7 @@ borrowedDeployments:  p.personal.borrowedDeployments  || [],
 ventureDistributions: p.personal.ventureDistributions || [],
 ventureMilestones:    p.personal.ventureMilestones    || [],
 ventureJournal:       p.personal.ventureJournal       || [],
-wallets:              (p.personal.wallets && p.personal.wallets.length > 0) ? p.personal.wallets : DEFAULT_WALLETS,
+wallets:              ensureDefaultWallets(p.personal.wallets),
 conversions:          p.personal.conversions          || [],
 bucketNotes:          p.personal.bucketNotes          || {},
 dismissedAnomalies:   p.personal.dismissedAnomalies   || [],
@@ -2623,6 +2642,10 @@ quickSpendBucketKey: null,
         personal: {
           ...current.personal,
           ...(persisted?.personal || {}),
+          wallets: ensureDefaultWallets(persisted?.personal?.wallets || current.personal.wallets),
+          conversions: Array.isArray(persisted?.personal?.conversions) ? persisted.personal.conversions : (current.personal.conversions || []),
+          bucketNotes: (persisted?.personal?.bucketNotes && typeof persisted.personal.bucketNotes === "object") ? persisted.personal.bucketNotes : (current.personal.bucketNotes || {}),
+          dismissedAnomalies: Array.isArray(persisted?.personal?.dismissedAnomalies) ? persisted.personal.dismissedAnomalies : (current.personal.dismissedAnomalies || []),
           syncing: false,
           syncError: null,
           lastDeleted: null,
@@ -2631,6 +2654,58 @@ quickSpendBucketKey: null,
     }
   )
 );
+
+function shallowEqualVal(a, b) {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== "object" || a === null || typeof b !== "object" || b === null) return false;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!Object.is(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (let i = 0; i < keysA.length; i++) {
+    const k = keysA[i];
+    if (!Object.prototype.hasOwnProperty.call(b, k) || !Object.is(a[k], b[k])) return false;
+  }
+  return true;
+}
+
+export function useStore(selector) {
+  if (typeof selector !== "function") return rawUseStore(selector);
+  let wrapped = selector._stableWrapper;
+  if (!wrapped) {
+    let lastState;
+    let lastResult;
+    let hasRun = false;
+    wrapped = (state) => {
+      if (hasRun && state === lastState) {
+        return lastResult;
+      }
+      const nextResult = selector(state);
+      if (hasRun && shallowEqualVal(lastResult, nextResult)) {
+        lastState = state;
+        return lastResult;
+      }
+      hasRun = true;
+      lastState = state;
+      lastResult = nextResult;
+      return nextResult;
+    };
+    selector._stableWrapper = wrapped;
+  }
+  return rawUseStore(wrapped);
+}
+Object.assign(useStore, rawUseStore);
+useStore.getState = rawUseStore.getState;
+useStore.setState = rawUseStore.setState;
+useStore.subscribe = rawUseStore.subscribe;
+useStore.getInitialState = rawUseStore.getInitialState;
+useStore.persist = rawUseStore.persist;
 
 // ════════════════════════════════════════════════════════════════════
 // COMPUTATIONS
@@ -3297,9 +3372,9 @@ export const selectVentureDistributions = (s) => s.personal.ventureDistributions
 export const selectVentureMilestones    = (s) => s.personal.ventureMilestones;
 export const selectVentureJournal       = (s) => s.personal.ventureJournal;
 export const selectWallets          = (s) => (s.personal.wallets && s.personal.wallets.length > 0 ? s.personal.wallets : DEFAULT_WALLETS);
-export const selectConversions      = (s) => s.personal.conversions || [];
-export const selectBucketNotes      = (s) => s.personal.bucketNotes || {};
-export const selectDismissedAnomalies = (s) => s.personal.dismissedAnomalies || [];
+export const selectConversions      = (s) => s.personal.conversions || EMPTY_ARRAY;
+export const selectBucketNotes      = (s) => s.personal.bucketNotes || EMPTY_OBJECT;
+export const selectDismissedAnomalies = (s) => s.personal.dismissedAnomalies || EMPTY_ARRAY;
 export const selectActiveTab        = (s) => s.app.activeTab;
 export const selectBaseCurrency     = (s) => s.app.baseCurrency;
 export const selectRates            = (s) => s.app.rates;
@@ -3307,7 +3382,7 @@ export const selectTheme            = (s) => s.app.theme;
 export const selectDangerModeOverride = (s) => s.app.dangerModeOverride || 'auto';
 export const selectPrivacyMask      = (s) => s.app.privacyMask !== false;
 export const selectQuickSpendBucket = (s) => s.app.quickSpendBucketKey;
-export const selectSelectedCalendarDate = (s) => s.app.selectedCalendarDate || new Date().toISOString().slice(0, 10);
+export const selectSelectedCalendarDate = (s) => s.app.selectedCalendarDate || DEFAULT_TODAY_STR;
 export const selectCalendarViewMode = (s) => s.app.calendarViewMode || 'day';
 export const selectHighlightedTxId  = (s) => s.app.highlightedTxId;
 export const selectQueueSize        = (s) => (s.personal.queue || []).length;
@@ -3340,9 +3415,20 @@ if (override === 'danger') return true;
 if (override === 'normal') return false;
 return selectTotalDebtInBase(state) > 0.005;
 };
+let _cachedBucketsInput = undefined;
+let _cachedBucketsDanger = undefined;
+let _cachedBucketsResult = null;
+
 export const selectActiveBuckets = (state) => {
-const isDanger = selectIsDangerMode(state);
-return resolveModeBuckets(state?.personal?.buckets || [], isDanger);
+  const isDanger = selectIsDangerMode(state);
+  const raw = state?.personal?.buckets || EMPTY_ARRAY;
+  if (_cachedBucketsResult && _cachedBucketsInput === raw && _cachedBucketsDanger === isDanger) {
+    return _cachedBucketsResult;
+  }
+  _cachedBucketsInput = raw;
+  _cachedBucketsDanger = isDanger;
+  _cachedBucketsResult = resolveModeBuckets(raw, isDanger);
+  return _cachedBucketsResult;
 };
 
 export const selectTotalReceivableInBase = (state) => {
